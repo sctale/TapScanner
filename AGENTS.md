@@ -141,6 +141,11 @@ npm run format:check
 > ⚠️ `.gitignore` 写 `android/`（未锚定）会连 `native/android/` 一起忽略：prebuild --clean 后智能高清静默消失，
 > 而 `git status` 干净得像没事发生。兄弟项目踩过，release-app.ps1 现在会拦住。
 
+## 发布脚本踩过的两个坑（v0.1.1）
+
+1. **aapt 的中文输出不能让 PowerShell 直接解码**：aapt 把资源字符串按 UTF-8 原样打到 stdout，PS 5.1 默认按控制台代码页(GBK)解码，中文被切坏 → 「桌面显示名不是扫描一下」的**假失败**，每次发布都被拦。现在改成：aapt 输出重定向到临时文件，再按 UTF-8 读回来比对。
+2. **仓库需要本地 git 身份**：脚本用的是普通 `git commit`，而本仓库没设身份就报 `unable to auto-detect email address`。按兄弟项目做法在仓库本地设 `user.name=sctale` / `user.email=18475722+sctale@users.noreply.github.com`（**不动全局配置**）。
+
 ## 已知缺口 / 下一步
 
 1. **实时取景边框（v0.2）**：VisionCamera v5 帧处理器要 Nitro spec + nitrogen codegen，是独立一轮风险；现在的替代是「拍完自动检测 + 手动四角」。
