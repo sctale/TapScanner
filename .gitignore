@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# native
+# ⚠️ 必须根锚定：写成 `android/` 会把 native/android/ 下的 Kotlin 真源一起忽略掉，
+# prebuild --clean 之后原生模块静默消失、而且 git 里看不出来（anti-car-sickness 的历史踩坑）。
+/android/
+/ios/
+!/native/android/
+.gradle-cache/
+
+# 首次 prebuild 前的原生工程骨架（gradle wrapper 由 prebuild 生成，不入库）
+
+# misc
+.DS_Store
+*.log
+gradle-build.log
+
+# 构建产物（APK 本地生成，走 GitHub Release 分发）
+*.apk
+
+# 发布签名（密钥严禁提交；丢失 keystore 后老用户无法升级，务必备份）
+keystore.properties
+keystore/
+
+# QA 台跑批产物（前后对比图 + metrics JSON，体积大且可复现）
+qa-out/
+
+# vscode
+.vscode/
+.idea/

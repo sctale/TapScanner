@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "扫描一下",
+    "slug": "TapScanner",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "tapscanner",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tapscanner.app"
+    },
+    "android": {
+      "package": "com.tapscanner.app",
+      "applicationName": "扫描一下",
+      "adaptiveIcon": {
+        "backgroundColor": "#F8F6F3",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "./plugins/withVersionSync",
+      "./plugins/withReleaseSigning",
+      "./plugins/withScannerModule",
+      "expo-sqlite",
+      "expo-status-bar",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "用于把你相册里已有的照片也走一遍智能高清"
+        }
+      ]
+    ]
+  }
+}
