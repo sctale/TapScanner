@@ -7,12 +7,14 @@ import { Camera, useCameraPermission, usePhotoOutput, type CameraRef } from 'rea
 import { COLORS, CARD, FONT_SIZE, RADIUS, SPACING, findMode, genUuid } from '../constants';
 import { isEngineReady, scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
 import {
-  captureRaw,
   renderCapture,
   savePagesAsDocument,
+  importSource,
+  analyzeRaw,
   type RawCapture,
   type RenderedPage,
 } from '../utils/scanPipeline';
+import { clearFailure, recordFailure, type FailureRecord } from '../utils/diagnostics';
 import { cropLabel } from '../utils/modeSelection';
 import { fileUri } from '../utils/scanFiles';
 import { loadSettings } from '../utils/appSettings';
@@ -31,6 +33,16 @@ interface Settings {
 }
 
 const DEFAULT_SETTINGS: Settings = { autoCrop: true, outputMaxSide: 3000, defaultMode: 'hd' };
+
+/** 出错环节的用户语言（内部 step 码不变，只是别让用户看英文键名） */
+const STEP_LABEL: Record<string, string> = {
+  capture: '拍照',
+  'capture-fallback': '拍照（备用路径）',
+  relocate: '保存图片',
+  analyze: '识别纸边',
+  process: '智能高清处理',
+  save: '保存到文档',
+};
 
 /** 文档默认标题：时间戳最实用，用户之后可以改名 */
 function defaultTitle(): string {
@@ -70,6 +82,9 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
   const [torch, setTorch] = useState(false);
   const [engineMissing, setEngineMissing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // 失败现场常驻显示：Toast 2 秒就没了，而失败点全在相机/原生层，
+  // 手机连不上 adb 时，屏幕上这一整块英文是唯一能把根因带回来的东西。
+  const [failure, setFailure] = useState<FailureRecord | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +126,8 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
         setNote(cropLabel(capture.analyze.detected, capture.analyze.confidence));
         return page;
       } catch (error) {
-        showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error');
+        setFailure(recordFailure('process', error, { mode, path: capture.rawPath.slice(-40) }));
+        showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error', 4200);
         return null;
       } finally {
         setBusy(false);
@@ -124,8 +140,11 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
     async (sourcePath: string) => {
       if (busy) return;
       setBusy(true);
+      setFailure(null);
       try {
-        const capture = await captureRaw(sourcePath, docUuid.current);
+        // 搬运与感知分两步：出错时能分清是「文件没进应用目录」还是「原生读不出这张图」
+        const imported = await importSource(sourcePath, docUuid.current);
+        const capture = await analyzeRaw(imported.pageUuid, imported.rawPath);
         const mode = settings.defaultMode;
         setCaptures((prev) => {
           const next = [...prev, capture];
@@ -137,7 +156,14 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
         setStage('review');
         void runRender(capture, mode, capture.analyze.quad);
       } catch (error) {
-        showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error');
+        const moving =
+          (error as Error)?.message?.includes('原始图片') || (error as Error)?.message?.includes('搬运后');
+        setFailure(
+          recordFailure(moving ? 'relocate' : 'analyze', error, {
+            source: sourcePath.slice(-48),
+          }),
+        );
+        showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error', 4200);
       } finally {
         setBusy(false);
       }
@@ -159,17 +185,44 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
     });
   }, []);
 
+  /**
+   * 快门：先走「直接写文件」，失败再退到「内存 Photo → 存临时文件」。
+   *
+   * 两条路都是 VisionCamera v5 的公开 API；留第二条不是为了绕，而是为了让报错自己说话：
+   *   - 两条都挂 → 卡片里同时给出两个 message，根因基本就在其中一条
+   *   - 只有第一条挂 → 是 capturePhotoToFile 这条路径的问题（Android 侧写文件），能定位到库的实现
+   */
   const shutter = useCallback(async () => {
     if (busy) return;
+    setBusy(true);
+    setFailure(null);
+    const settings0 = { enableShutterSound: false, flashMode: torch ? ('on' as const) : ('off' as const) };
+    let filePath: string | null = null;
+    let firstError: unknown = null;
     try {
-      const photo = await photoOutput.capturePhotoToFile(
-        { enableShutterSound: false, flashMode: torch ? 'on' : 'off' },
-        {},
-      );
-      void handleCapturedFile(photo.filePath);
+      const photo = await photoOutput.capturePhotoToFile(settings0, {});
+      filePath = photo.filePath;
     } catch (error) {
-      showToast(scannerErrorMessage(undefined, (error as Error)?.message ?? '拍照失败'), 'error');
+      firstError = error;
+      try {
+        const photo = await photoOutput.capturePhoto(settings0, {});
+        filePath = await photo.saveToTemporaryFileAsync();
+        // v5 的内存 Photo 持有原生缓冲池，用完必须显式释放，不能等 JS 运行时回收
+        photo.dispose();
+      } catch (fallbackError) {
+        setFailure(
+          recordFailure('capture-fallback', fallbackError, {
+            primary: firstError
+              ? `${(firstError as Error)?.name ?? ''}: ${(firstError as Error)?.message ?? ''}`.slice(0, 120)
+              : 'none',
+          }),
+        );
+        showToast('拍照失败，屏幕上有完整原因', 'error', 5000);
+        return;
+      }
     }
+    setBusy(false);
+    if (filePath) void handleCapturedFile(filePath);
   }, [busy, handleCapturedFile, photoOutput, torch]);
 
   const pickFromAlbum = useCallback(async () => {
@@ -243,7 +296,8 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
       setIndex(0);
       setStage('camera');
     } catch (error) {
-      showToast((error as Error)?.message ?? '保存失败', 'error');
+      setFailure(recordFailure('save', error, { pages: pages.length }));
+      showToast((error as Error)?.message ?? '保存失败', 'error', 4200);
     } finally {
       setBusy(false);
     }
@@ -473,6 +527,40 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
           />
         ) : null}
       </View>
+
+      {/* 失败现场：常驻、可选文字、不用 Modal（透明 Modal 会让整页点不动，TapLedger 踩过） */}
+      {failure ? (
+        <View style={styles.failureCard}>
+          <View style={styles.failureHead}>
+            <Text style={styles.failureTitle}>出错环节：{STEP_LABEL[failure.step] ?? failure.step}</Text>
+            <Pressable
+              onPress={() => {
+                clearFailure();
+                setFailure(null);
+              }}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="关闭错误详情"
+            >
+              <Text style={styles.failureClose}>关闭</Text>
+            </Pressable>
+          </View>
+          <Text selectable style={styles.failureCode}>
+            {failure.code}
+          </Text>
+          <Text selectable style={styles.failureMessage}>
+            {failure.message}
+          </Text>
+          {failure.context ? (
+            <Text selectable style={styles.failureCtx}>
+              {Object.entries(failure.context)
+                .map(([k, v]) => `${k}=${String(v)}`)
+                .join('  ')}
+            </Text>
+          ) : null}
+          <Text style={styles.failureTip}>截这张图发给我就能定位。这段也会留在「管理 → 关于与自检」里。</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -729,4 +817,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   secondaryButtonText: { color: COLORS.text, fontSize: FONT_SIZE.md, fontWeight: '600' },
+
+  failureCard: {
+    position: 'absolute',
+    left: SPACING.md,
+    right: SPACING.md,
+    bottom: SPACING.lg,
+    padding: SPACING.md,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.surface,
+    borderWidth: 2,
+    borderColor: COLORS.danger,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  failureHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  failureTitle: { fontSize: FONT_SIZE.sm, fontWeight: '800', color: COLORS.danger, flexShrink: 1 },
+  failureClose: { fontSize: FONT_SIZE.sm, color: COLORS.textSecondary, paddingHorizontal: SPACING.xs },
+  failureCode: { fontSize: FONT_SIZE.xs, color: COLORS.textTertiary, fontWeight: '700' },
+  failureMessage: { fontSize: FONT_SIZE.xs, color: COLORS.text, lineHeight: 17 },
+  failureCtx: { fontSize: FONT_SIZE.xs, color: COLORS.textSecondary, lineHeight: 16 },
+  failureTip: { fontSize: FONT_SIZE.xs, color: COLORS.textTertiary, marginTop: 2 },
 });

@@ -49,7 +49,12 @@ describe('assemblePdf 结构', () => {
   it('每个 xref 偏移都真的落在对应的 "N 0 obj" 上（错一位整份 PDF 就打不开）', () => {
     const bytes = assemblePdf(onePage());
     const text = asText(bytes);
-    const startxref = Number(text.slice(text.indexOf('startxref') + 9).trim().split('\n')[0]);
+    const startxref = Number(
+      text
+        .slice(text.indexOf('startxref') + 9)
+        .trim()
+        .split('\n')[0],
+    );
     expect(Number.isFinite(startxref)).toBe(true);
     expect(text.slice(startxref, startxref + 4)).toBe('xref');
 

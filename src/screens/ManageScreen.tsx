@@ -9,6 +9,7 @@ import { directoryBytes, formatBytes, listDocumentDirs, deleteDocumentFiles } fr
 import { loadSettings, updateSettings, type AppSettings } from '../utils/appSettings';
 import { isEngineReady, probeImage, scannerErrorMessage } from '../native/ScannerNative';
 import { exportBackupJson, importBackupJson } from '../utils/backup';
+import { formatFailure, lastFailure, subscribeFailure } from '../utils/diagnostics';
 import { useBackHandler } from '../hooks/useBackHandler';
 import { showToast } from '../components/Toast';
 import type { ReadyInfo } from '../types';
@@ -311,6 +312,20 @@ function AboutPage({ engine, onBack }: { engine: ReadyInfo | null; onBack: () =>
   const insets = useSafeAreaInsets();
   const [selfTest, setSelfTest] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lastErrorText, setLastErrorText] = useState<string | null>(() => {
+    const record = lastFailure();
+    return record ? formatFailure(record) : null;
+  });
+
+  // 订阅一次：用户在扫描页遇到新失败后回到这里就能立刻看到最新的那条
+  useEffect(
+    () =>
+      subscribeFailure(() => {
+        const record = lastFailure();
+        setLastErrorText(record ? formatFailure(record) : null);
+      }),
+    [],
+  );
 
   const version = useMemo(
     () => Constants.expoConfig?.version ?? Constants.manifest2?.runtimeVersion ?? '开发版',
@@ -410,6 +425,19 @@ function AboutPage({ engine, onBack }: { engine: ReadyInfo | null; onBack: () =>
           </Pressable>
           {selfTest ? <Text style={styles.selfTest}>{selfTest}</Text> : null}
         </View>
+
+        {/* 最近一次失败现场：扫描页的卡片可能已经关掉了，这里回看一次 */}
+        {lastErrorText ? (
+          <View style={styles.card}>
+            <Text style={styles.rowLabel}>最近一次失败</Text>
+            <Text selectable style={styles.failureText}>
+              {lastErrorText}
+            </Text>
+            <Text style={styles.hint}>
+              截图发给我就能定位根因；这份详情也存在应用目录 diagnostics/last_error.txt。
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -531,4 +559,5 @@ const styles = StyleSheet.create({
   bigNumber: { fontSize: FONT_SIZE.xxxl, fontWeight: '800', color: COLORS.text },
   appName: { fontSize: FONT_SIZE.xl, fontWeight: '800', color: COLORS.text },
   selfTest: { fontSize: FONT_SIZE.xs, color: COLORS.accentDark, marginTop: SPACING.xs },
+  failureText: { fontSize: FONT_SIZE.xs, color: COLORS.text, lineHeight: 17 },
 });

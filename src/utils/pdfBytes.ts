@@ -38,8 +38,21 @@ export interface PdfMeta {
  * 不让编码层替我决定长度。
  */
 const PDF_HEADER = new Uint8Array([
-  0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, // %PDF-1.4\n
-  0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a, // %<4 个高位字节>\n
+  0x25,
+  0x50,
+  0x44,
+  0x46,
+  0x2d,
+  0x31,
+  0x2e,
+  0x34,
+  0x0a, // %PDF-1.4\n
+  0x25,
+  0xe2,
+  0xe3,
+  0xcf,
+  0xd3,
+  0x0a, // %<4 个高位字节>\n
 ]);
 
 function ascii(text: string): Uint8Array {
@@ -118,7 +131,7 @@ export function assemblePdf(pages: PdfPageBytes[], meta: PdfMeta = {}): Uint8Arr
     3,
     `<< /Producer ${pdfString(meta.producer ?? 'TapScanner')} /CreationDate (D:19700101)${
       meta.title ? ` /Title ${pdfString(meta.title)}` : ''
-    } >>`
+    } >>`,
   );
 
   pages.forEach((page, index) => {
@@ -128,7 +141,7 @@ export function assemblePdf(pages: PdfPageBytes[], meta: PdfMeta = {}): Uint8Arr
       ids.page,
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${size.widthPt} ${size.heightPt}] ` +
         `/Resources << /XObject << /Im${index} ${ids.image} 0 R >> /ProcSet [/PDF /ImageC] >> ` +
-        `/Contents ${ids.contents} 0 R >>`
+        `/Contents ${ids.contents} 0 R >>`,
     );
     const content = `q ${size.widthPt} 0 0 ${size.heightPt} 0 0 cm /Im${index} Do Q`;
     pushStream(ids.contents, `<< /Length ${content.length} >>`, ascii(content));
@@ -136,7 +149,7 @@ export function assemblePdf(pages: PdfPageBytes[], meta: PdfMeta = {}): Uint8Arr
       ids.image,
       `<< /Type /XObject /Subtype /Image /Width ${page.widthPx} /Height ${page.heightPx} ` +
         `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >> `,
-      page.jpeg
+      page.jpeg,
     );
   });
 
@@ -147,9 +160,7 @@ export function assemblePdf(pages: PdfPageBytes[], meta: PdfMeta = {}): Uint8Arr
     xref += `${String(offsets[id] ?? 0).padStart(10, '0')} 00000 n \r\n`;
   }
   push(
-    ascii(
-      `${xref}trailer\n<< /Size ${maxId + 1} /Root 1 0 R /Info 3 0 R >>\nstartxref\n${cursor}\n%%EOF\n`
-    )
+    ascii(`${xref}trailer\n<< /Size ${maxId + 1} /Root 1 0 R /Info 3 0 R >>\nstartxref\n${cursor}\n%%EOF\n`),
   );
 
   return concat(parts);

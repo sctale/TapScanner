@@ -2,11 +2,11 @@
 
 极简文档扫描 App，对标扫描全能王，主打**智能高清**。所有扫描件只存在你手机里，不上传、不需要账号。
 
-当前版本：0.1.0 · Android（Expo SDK 56 + 自研 OpenCV 原生模块）
+当前版本：0.1.1 · Android（Expo SDK 56 + 自研 OpenCV 原生模块）
 
 ## 下载与安装
 
-在手机上打开 [Releases](https://github.com/sctale/TapScanner/releases) 里的 `TapScanner-v0.1.0.apk`，安装时允许「来自未知来源的应用」。卸载即清空全部数据，没有云端残留。
+在手机上打开 [Releases](https://github.com/sctale/TapScanner/releases) 里最新的 `TapScanner-v<版本>.apk`，安装时允许「来自未知来源的应用」。卸载即清空全部数据，没有云端残留。
 
 ## 智能高清到底做了什么
 

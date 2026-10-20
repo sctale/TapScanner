@@ -122,18 +122,25 @@ try {
   if (-not (Test-Path $apkPath)) { Fail "未找到构建产物：$apkPath" }
 
   # ---------- 6. aapt 校验 versionName / versionCode / 显示名 ----------
+  # 注意编码：aapt 把资源里的中文按 UTF-8 原样写到 stdout，而 PowerShell 5.1 默认用
+  # 控制台代码页(GBK)解码，中文会被切坏 —— 直接比较会得到「显示名不对」的**假失败**
+  # （v0.1.1 就断在这里）。所以让 aapt 输出落盘，再按 UTF-8 读回来比。
   $buildTools = Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
                 Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
   if (-not $buildTools) { Fail "未找到 Android SDK build-tools。" }
   $aapt = Join-Path $buildTools 'aapt.exe'
-  $badgingOut = & $aapt dump badging $apkPath
-  $pkgLine = ($badgingOut | Where-Object { $_ -match '^package:' }) -join ' '
+  $aaptOut = Join-Path $env:TEMP "tapscanner-aapt-$Version.txt"
+  & cmd.exe /c "`"$aapt`" dump badging `"$apkPath`" > `"$aaptOut`"" 2>&1 | Out-Null
+  if (-not (Test-Path $aaptOut)) { Fail "aapt 没有输出，无法校验产物。" }
+  $badgingText = [System.IO.File]::ReadAllText($aaptOut, $utf8)
+  Remove-Item $aaptOut -ErrorAction SilentlyContinue
+  $pkgLine = ($badgingText -split "`r?`n" | Where-Object { $_ -match '^package:' } | Select-Object -First 1)
   Write-Host "aapt: $pkgLine" -ForegroundColor Gray
-  if ($pkgLine -notmatch [regex]::Escape("versionName='$Version'")) { Fail "versionName 校验失败（期望 $Version）" }
-  if ($pkgLine -notmatch [regex]::Escape("versionCode='$versionCode'")) { Fail "versionCode 校验失败（期望 $versionCode）" }
+  if ($pkgLine -notlike "*versionName='$Version'*") { Fail "versionName 校验失败（期望 $Version）" }
+  if ($pkgLine -notlike "*versionCode='$versionCode'*") { Fail "versionCode 校验失败（期望 $versionCode）" }
   # Expo 56 的模板资源在所有 Config Plugin 之后写，桌面名字只能信产物不能信配置
-  $labelLine = ($badgingOut | Where-Object { $_ -match "^application-label:'" } | Select-Object -First 1) -join ''
-  if ($labelLine -notmatch [regex]::Escape("'$AppName'")) {
+  $labelLine = ($badgingText -split "`r?`n" | Where-Object { $_ -match "^application-label:'" } | Select-Object -First 1)
+  if ($null -eq $labelLine -or -not $labelLine.Contains("'$AppName'")) {
     Fail "桌面显示名不是「$AppName」（实际：$labelLine）。检查 app.json 的 android.applicationName。"
   }
 

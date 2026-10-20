@@ -49,22 +49,35 @@ export interface RenderOptions {
   jpegQuality?: number;
 }
 
-/** 相机/相册的临时文件 → 文档目录里的 raw + 感知结果 */
-export async function captureRaw(sourcePath: string, docUuid: string): Promise<RawCapture> {
-  const uuid = genUuid();
+/** 把相机/相册的临时文件搬进文档目录（单独一步，好让界面能分清「搬运挂」还是「感知挂」） */
+export async function importSource(
+  sourcePath: string,
+  docUuid: string,
+): Promise<{ pageUuid: string; rawPath: string }> {
   ensureDirectory(documentDir(docUuid));
-  const dest = rawFile(docUuid, uuid);
+  const pageUuid = genUuid();
+  const dest = rawFile(docUuid, pageUuid);
   const rawPath = await relocateIntoDocument(sourcePath, dest);
+  return { pageUuid, rawPath };
+}
 
+/** 对已经落在文档目录里的 raw 做感知 + 边界检测 */
+export async function analyzeRaw(pageUuid: string, rawPath: string): Promise<RawCapture> {
   const analyze = await analyzeImage(rawPath);
   return {
-    uuid,
+    uuid: pageUuid,
     rawPath,
     width: analyze.width,
     height: analyze.height,
     analyze,
     suggestion: suggestMode(analyze.metrics),
   };
+}
+
+/** 相机/相册的临时文件 → 文档目录里的 raw + 感知结果 */
+export async function captureRaw(sourcePath: string, docUuid: string): Promise<RawCapture> {
+  const imported = await importSource(sourcePath, docUuid);
+  return analyzeRaw(imported.pageUuid, imported.rawPath);
 }
 
 /**
