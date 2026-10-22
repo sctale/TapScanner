@@ -1,0 +1,29 @@
+TapScanner（扫描一下）
+Copyright 2026 sctale
+
+This product includes software developed as part of the TapScanner project
+(https://github.com/sctale/TapScanner), licensed under the Apache License,
+Version 2.0.
+
+---
+
+This product's distributed Android application links third-party components
+that are NOT part of this repository's source code. They remain under their
+own licenses:
+
+  * OpenCV (org.opencv:opencv)
+    Copyright (c) OpenCV Foundation contributors
+    Licensed under the Apache License, Version 2.0 (and historically
+    BSD-3-Clause). See https://opencv.org/license.html
+
+  * react-native-vision-camera, react-native-nitro-modules,
+    react-native-nitro-image
+    Copyright (c) Marc Rousavy and contributors
+    Licensed under the MIT License. See https://github.com/mrousavy/react-native-vision-camera
+
+  * Expo / React Native and the remaining npm dependencies
+    Each dependency is distributed under its own license; see the `license`
+    field of the corresponding package in package-lock.json.
+
+The OpenCV native libraries shipped in release APKs are the unmodified
+prebuilt artifacts published to Maven Central by OpenCV.org.
