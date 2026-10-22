@@ -141,6 +141,22 @@ npm run format:check
 > ⚠️ `.gitignore` 写 `android/`（未锚定）会连 `native/android/` 一起忽略：prebuild --clean 后智能高清静默消失，
 > 而 `git status` 干净得像没事发生。兄弟项目踩过，release-app.ps1 现在会拦住。
 
+## 路径的两种形态（v0.1.2 真机崩溃换来的规矩）
+
+expo-file-system v56 把传给 `new File(...)` 的字符串**按 URI 解析**，而原生 Kotlin 的 `java.io.File` 收的是**裸路径**。两者混用的后果极难查：
+裸路径喂给 `new File()` 不会立刻报错，而是在读 `.exists` 时抛
+`Exception in HostFunction: java.lang.IllegalArgumentException: URL is not absolute`，
+文案像「文件不存在」，实际是「形态不对」——v0.1.0/v0.1.1 的真机首拍必崩就是这个。
+
+| 目标 | 用什么 | 例子 |
+|------|--------|------|
+| `new File(...)` / `Directory` / `.exists` / `.size` | `withFileScheme(p)`（`file:///...`） | `new File(withFileScheme(rawPath))` |
+| 传给 `ScannerModule`（Kotlin）、`Sharing`、`<Image source>` | 裸路径 / `fileUri(p)` | `processPage({ path: rawPath })` |
+| 数据库里存什么 | **裸路径**（`nativePath(dest.uri)`） | `pages.raw_path` |
+
+规则：`(Directory, name)` 变参构造永远安全；只有「从字符串构造 File」时才需要 `withFileScheme`。
+两个转换函数都在 `src/utils/filePaths.ts`（纯函数，不 import RN/expo，12 项往返单测钉住），不要在别处再写一遍。
+
 ## 发布脚本踩过的两个坑（v0.1.1）
 
 1. **aapt 的中文输出不能让 PowerShell 直接解码**：aapt 把资源字符串按 UTF-8 原样打到 stdout，PS 5.1 默认按控制台代码页(GBK)解码，中文被切坏 → 「桌面显示名不是扫描一下」的**假失败**，每次发布都被拦。现在改成：aapt 输出重定向到临时文件，再按 UTF-8 读回来比对。
