@@ -28,6 +28,21 @@ $Description = '极简文档扫描 · 智能高清（自动切边 + 光照摊平
 function Fail([string]$msg) { Write-Host "[错误] $msg" -ForegroundColor Red; exit 1 }
 function Note([string]$msg) { Write-Host $msg -ForegroundColor Cyan }
 
+# PowerShell 5.1 的坑：$ErrorActionPreference='Stop' 时，原生命令只要往 stderr 写一行
+# 就会被当成终止错误抛出（NativeCommandError）。而「探测某物是否存在」的命令
+# （gh repo view / gh release view / gh api）恰恰是靠 stderr 报「不存在」的。
+# 所以探测一律走这个包装：临时降到 Continue，只看退出码。
+function Test-GhExit([scriptblock]$block) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $block *> $null
+    return ($LASTEXITCODE -eq 0)
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
@@ -38,14 +53,20 @@ try {
     if (Test-Path $candidate) { $gh = $candidate } else { Fail "未找到 GitHub CLI（gh.exe）。" }
   } else { $gh = $gh.Source }
 
-  $who = & $gh api user --jq .login 2>&1
-  if ($LASTEXITCODE -ne 0 -or -not $who) {
+  $who = ''
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $whoRaw = & $gh api user --jq .login 2>$null
+  $whoOk = ($LASTEXITCODE -eq 0)
+  $ErrorActionPreference = $prevEap
+  if (-not $whoOk -or -not "$whoRaw") {
     Fail @"
 gh 没有有效登录（常见原因：keyring 里的 token 已失效，或本机到 github.com 的 HTTPS 不通）。
 先执行：  & "$gh" auth login --hostname github.com --git-protocol https --web
 网络排查：curl -sS https://api.github.com/zen  （TLS 被掐断时会报 SSL_ERROR_SYSCALL）
 "@
   }
+  $who = "$whoRaw".Trim()
   Note "==> 已登录 GitHub：$who"
 
   # ---------- 1. 目标版本与产物 ----------
@@ -61,8 +82,7 @@ gh 没有有效登录（常见原因：keyring 里的 token 已失效，或本�
   Note "==> 发布 v$Version（APK $([math]::Round((Get-Item $apk).Length / 1MB, 1)) MB）"
 
   # ---------- 2. 仓库（不存在就建，公开） ----------
-  & $gh repo view $Repo *> $null
-  $repoExists = ($LASTEXITCODE -eq 0)
+  $repoExists = Test-GhExit { & $gh repo view $Repo }
   if ($repoExists) {
     Note "==> 仓库已存在：https://github.com/$Repo"
   } else {
@@ -76,8 +96,12 @@ gh 没有有效登录（常见原因：keyring 里的 token 已失效，或本�
 
   # ---------- 3. remote + 推送 ----------
   $remoteUrl = "https://github.com/$Repo.git"
+  $prevEap2 = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   $current = & git remote get-url origin 2>$null
-  if ($LASTEXITCODE -ne 0 -or -not $current) {
+  $hasRemote = ($LASTEXITCODE -eq 0)
+  $ErrorActionPreference = $prevEap2
+  if (-not $hasRemote -or -not "$current") {
     if ($DryRun) { Note "[DryRun] 将 git remote add origin $remoteUrl" }
     else {
       & git remote add origin $remoteUrl
@@ -99,8 +123,8 @@ gh 没有有效登录（常见原因：keyring 里的 token 已失效，或本�
     if ($LASTEXITCODE -ne 0) { Fail "git push 失败（凭据或网络；gh 已登录时通常重试即可）。" }
 
     # ---------- 4. Release（说明取自 CHANGELOG 对应小节） ----------
-    & $gh release view "v$Version" --repo $Repo *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $releaseExists = Test-GhExit { & $gh release view "v$Version" --repo $Repo }
+    if ($releaseExists) {
       Note "==> Release v$Version 已存在，只覆盖上传 APK"
       & $gh release upload "v$Version" $apk --repo $Repo --clobber
       if ($LASTEXITCODE -ne 0) { Fail "上传 APK 失败。" }
