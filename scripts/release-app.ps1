@@ -240,8 +240,13 @@ try {
 
   # ---------- 11. git 提交（有远端才推；没远端就本地留着） ----------
   Write-Host "==> git 提交" -ForegroundColor Cyan
-  $stagePaths = @('app.json', 'package.json', 'package-lock.json', 'README.md', 'CHANGELOG.md',
-                  'AGENTS.md', 'src', 'App.tsx', 'index.ts', 'plugins', 'scripts', 'native', 'tools', 'assets')
+  # 只暂存发布链路真正改到的文件：git add -A 会把工作区里无关的半成品卷进 release 提交。
+  # 但清单必须覆盖工程配置文件本身 —— v0.1.3 就漏了 eslint.config.js：本地能过 lint，
+  # 新克隆的人跑 npm run lint 直接报错，而脚本自己永远发现不了（它检查的是工作区）。
+  $stagePaths = @('app.json', 'package.json', 'package-lock.json', 'tsconfig.json',
+                  'eslint.config.js', '.prettierrc', '.prettierignore', '.gitignore', '.gitattributes',
+                  'README.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md', 'LICENSE', 'NOTICE',
+                  'src', 'App.tsx', 'index.ts', 'plugins', 'scripts', 'native', 'tools', 'assets')
   & git add -- $stagePaths
   if ($LASTEXITCODE -ne 0) { Fail "git add 失败（注意 android/ 必须在 .gitignore 里且根锚定）。" }
   & git status --short

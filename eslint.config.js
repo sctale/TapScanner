@@ -35,14 +35,16 @@ module.exports = defineConfig([
     },
   },
   {
-    // Expo config plugin 与发布脚本同样是 Node 侧 CommonJS（__dirname / require / module）
-    files: ['plugins/**/*.js', 'scripts/**/*.js'],
+    // Expo config plugin、发布脚本、图标生成器都是 Node 侧代码（require / module / Buffer / process）
+    files: ['plugins/**/*.js', 'scripts/**/*.js', 'tools/**/*.{js,mjs}'],
     languageOptions: {
       globals: {
         process: 'readonly',
         console: 'readonly',
         __dirname: 'readonly',
         require: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
         module: 'writable',
       },
     },
