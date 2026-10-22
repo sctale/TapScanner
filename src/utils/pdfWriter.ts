@@ -1,6 +1,6 @@
 import { File } from 'expo-file-system';
 import { assemblePdf, type PdfMeta, type PdfPageBytes } from './pdfBytes';
-import { nativePath } from './scanFiles';
+import { withFileScheme } from './filePaths';
 
 /**
  * PDF 的文件层：读 JPEG 字节 → 交给纯字节层组装 → 写盘。
@@ -24,7 +24,7 @@ export interface PdfPageFile {
 export async function buildPdfFromFile(pages: PdfPageFile[], meta?: PdfMeta): Promise<Uint8Array> {
   const entries: PdfPageBytes[] = [];
   for (const page of pages) {
-    const file = new File(nativePath(page.path));
+    const file = new File(withFileScheme(page.path));
     if (!file.exists) throw new Error(`PDF 缺少一页：${page.path}`);
     const buffer = await file.arrayBuffer();
     entries.push({
@@ -39,7 +39,7 @@ export async function buildPdfFromFile(pages: PdfPageFile[], meta?: PdfMeta): Pr
 
 /** 写二进制到文件（expo-file-system 的 write 接受 ArrayBuffer/ArrayBufferView） */
 export async function writeBytes(path: string, bytes: Uint8Array): Promise<number> {
-  const file = new File(nativePath(path));
+  const file = new File(withFileScheme(path));
   try {
     if (!file.parentDirectory.exists) file.parentDirectory.create({ intermediates: true });
   } catch {

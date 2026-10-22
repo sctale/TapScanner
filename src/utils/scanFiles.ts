@@ -1,5 +1,5 @@
 import { Directory, File, Paths } from 'expo-file-system';
-import { Platform } from 'react-native';
+import { nativePath, withFileScheme } from './filePaths';
 
 /**
  * 扫描件的落盘规则（唯一真源）。
@@ -73,7 +73,9 @@ export function stampName(prefix: string, ext: string): string {
  */
 export async function relocateIntoDocument(source: string, dest: File): Promise<string> {
   ensureDirectory(dest.parentDirectory);
-  const from = new File(nativePath(source));
+  // ⚠️ 这里必须喂 URI 形态：expo-file-system 把字符串按 URI 解析，裸路径会在读 .exists 时
+  // 抛 IllegalArgumentException: URL is not absolute（v0.1.0/v0.1.1 真机崩溃的根因）
+  const from = new File(withFileScheme(source));
   if (!from.exists) throw new Error(`原始图片不存在：${source}`);
   await from.move(dest, { overwrite: true });
   // move 之后 dest 实例才是有效引用；用它的 uri 反推裸路径
@@ -81,19 +83,13 @@ export async function relocateIntoDocument(source: string, dest: File): Promise<
   return nativePath(dest.uri);
 }
 
-export function nativePath(uriOrPath: string): string {
-  return uriOrPath.startsWith('file://') ? uriOrPath.slice('file://'.length) : uriOrPath;
-}
-
-export function fileUri(path: string): string {
-  if (path.startsWith('file://')) return path;
-  return Platform.OS === 'android' ? `file://${path}` : `file://${path}`;
-}
+// 路径形态的两个转换函数收进 filePaths.ts（纯函数，有单测），这里只转发，保持既有 import 不变
+export { fileUri, nativePath, withFileScheme } from './filePaths';
 
 export function fileSize(path: string | null | undefined): number {
   if (!path) return 0;
   try {
-    const file = new File(nativePath(path));
+    const file = new File(withFileScheme(path));
     return file.exists ? (file.size ?? 0) : 0;
   } catch {
     return 0;
@@ -103,7 +99,7 @@ export function fileSize(path: string | null | undefined): number {
 export function deleteFile(path: string | null | undefined): boolean {
   if (!path) return false;
   try {
-    const file = new File(nativePath(path));
+    const file = new File(withFileScheme(path));
     if (!file.exists) return false;
     file.delete();
     return true;

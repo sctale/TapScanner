@@ -3,6 +3,17 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循 SemVer。
 版本单一数据源是 `app.json` 的 `expo.version`，`versionCode = major*10000 + minor*100 + patch`。
 
+## [0.1.2] - 2026-10-20
+
+修掉真机首拍必崩的那个 bug。v0.1.1 的错误卡片把它抓了出来：`java.lang.IllegalArgumentException: URL is not absolute`。
+
+### 修复
+
+- **快门后立刻报错（v0.1.0 起就有）**：为了喂给原生 Kotlin，我把 `file://` 剥成裸路径 `/data/...`，又拿这个裸路径去 `new File(...)`。expo-file-system 内部按 **URI** 解析字符串，裸路径不是绝对 URI，于是在读 `.exists` 时抛异常——文案看起来像「文件不存在」，实际是「路径形态不对」。
+  现在把两种形态彻底分开：给原生的用 `nativePath()`（裸路径），给 expo 的用 `withFileScheme()`（URI），两者都幂等，并由 `src/utils/filePaths.ts` 单独提供 + 12 项往返单测钉住。
+  影响范围：搬运临时文件、`fileSize`/`deleteFile`、PDF 读页与写盘。
+- 上一条提到的「拍摄备用路径」（`capturePhoto → saveToTemporaryFileAsync`）保留：它不是这次的原因，但作为相机层的兜底仍然有价值。
+
 ## [0.1.1] - 2026-10-20
 
 真机首拍就报错，而 Toast 2 秒就消失、手机又连不上 adb —— 这一版把「失败原因」变成屏幕上长期可读、可截图的一块，并给拍摄加了一条备用路径。
