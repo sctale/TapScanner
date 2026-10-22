@@ -91,6 +91,62 @@ try {
   $env:TAPSCANNER_REQUIRE_RELEASE_SIGNING = '1'
   if ($EmulatorAbi) { $env:TAPSCANNER_EMULATOR_ABI = '1' } else { Remove-Item Env:\TAPSCANNER_EMULATOR_ABI -ErrorAction SilentlyContinue }
   Write-Host "==> npx expo prebuild --platform android --no-install --clean" -ForegroundColor Cyan
+  # ---- 为什么这段这么长（v0.1.3 连撞三次 EBUSY 换来的）----
+  # prebuild --clean 要 unlink 整个 android/，而 Gradle 守护进程一直握着
+  # app/build/intermediates/dex/.../classes.dex 的句柄：文件能以写方式打开（所以「看起来没锁」），
+  # 但只要有句柄存在就删不掉 → Expo 抛 EBUSY。而且失败时 android/ 已被删了一半，
+  # 连 gradlew.bat 都没了 —— 所以「先跑 gradlew --stop」这条最直觉的路本身就不可靠。
+  # 结论：按进程特征停 daemon（只认 GradleDaemon，不碰 Kotlin 编译守护进程和 IDE），
+  #      自己带重试地删 android/，删不掉时**报出第一个被占用的文件**而不是静默失败。
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  if (Test-Path (Join-Path $root 'android\gradlew.bat')) {
+    Push-Location (Join-Path $root 'android')
+    try { & .\gradlew.bat --stop *> $null } finally { Pop-Location }
+  }
+  Start-Sleep -Seconds 2
+  $daemons = Get-CimInstance Win32_Process -Filter "Name='java.exe'" |
+             Where-Object { $_.CommandLine -match 'GradleDaemon' }
+  foreach ($d in $daemons) {
+    Write-Host "==> 停掉 Gradle 守护进程 PID $($d.ProcessId)" -ForegroundColor Gray
+    Stop-Process -Id $d.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  if ($daemons) { Start-Sleep -Seconds 2 }
+  $ErrorActionPreference = $prevEap
+
+  $androidDir = Join-Path $root 'android'
+  if (Test-Path $androidDir) {
+    $removed = $false
+    $lastError = ''
+    for ($i = 1; $i -le 8; $i++) {
+      $ErrorActionPreference = 'Continue'
+      Remove-Item $androidDir -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable rmErr
+      $ErrorActionPreference = $prevEap
+      if (-not (Test-Path $androidDir)) { $removed = $true; break }
+      $lastError = if ($rmErr) { "$($rmErr[0].Exception.Message)" } else { $lastError }
+      Write-Host "==> android/ 仍被占用，5 秒后重试（$i/8）" -ForegroundColor Yellow
+      Start-Sleep -Seconds 5
+    }
+    if (-not $removed) {
+      # 报出真正被占用的文件，别让下一次排查再从「EBUSY」三个字猜起
+      Write-Host "[诊断] 最后一次错误：$lastError" -ForegroundColor Yellow
+      $blocked = @()
+      $ErrorActionPreference = 'Continue'
+      Get-ChildItem $androidDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+          $fs = [System.IO.File]::Open($_.FullName, 'Open', 'ReadWrite', 'None')
+          $fs.Close()
+        } catch { $blocked += $_.FullName }
+      }
+      $ErrorActionPreference = $prevEap
+      if ($blocked.Count -gt 0) {
+        Write-Host "[诊断] 被占用文件（前 5 个）：" -ForegroundColor Yellow
+        $blocked | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+      }
+      Fail "android/ 删不掉。上面列出了被占用的文件；若仍有 Gradle 进程残留，任务管理器结束 java.exe 后重试。"
+    }
+    Write-Host "==> 已删除 android/（prebuild 将全新重建）" -ForegroundColor Gray
+  }
   & npx expo prebuild --platform android --no-install --clean
   if ($LASTEXITCODE -ne 0) { Fail "prebuild 失败。" }
 

@@ -88,19 +88,29 @@ function svgDoc(inner, { width = SIZE, height = SIZE, background = null } = {}) 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${SIZE} ${SIZE}">${bg}${inner}</svg>`;
 }
 
+/** 只有纸（不含文字线） */
+function paperOnly({ fill }) {
+  const { w, h, radius } = SHEET;
+  return `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="${radius}" fill="${fill}"/>`;
+}
+
+/** 只有文字线（局部坐标同 paperOnly） */
+function linesOnly({ fill }) {
+  const { w } = SHEET;
+  const t = LINE_CFG.thickness;
+  return LINE_CFG.yRatios
+    .map((ratio, i) => {
+      const lw = w * LINE_CFG.widths[i];
+      return `<rect x="${-w * 0.29}" y="${SHEET.h * ratio - t / 2}" width="${lw}" height="${t}" rx="${t / 2}" fill="${fill}"/>`;
+    })
+    .join('');
+}
+
 /**
  * 纸张 + 纸上的文字线（局部坐标：以纸中心为原点）
  */
 function sheetGroup({ paperFill, lineFill }) {
-  const { w, h, radius } = SHEET;
-  const t = LINE_CFG.thickness;
-  const lines = LINE_CFG.yRatios
-    .map((ratio, i) => {
-      const lw = w * LINE_CFG.widths[i];
-      return `<rect x="${-w * 0.29}" y="${h * ratio - t / 2}" width="${lw}" height="${t}" rx="${t / 2}" fill="${lineFill}"/>`;
-    })
-    .join('');
-  return `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="${radius}" fill="${paperFill}"/>${lines}`;
+  return paperOnly({ fill: paperFill }) + linesOnly({ fill: lineFill });
 }
 
 /**
@@ -149,10 +159,20 @@ function renderForeground() {
   return svgDoc(inner);
 }
 
-/** 单色层：整体白色剪影（系统主题着色用，必须丢掉内部对比） */
-function renderMonochrome() {
-  const inner = placed(sheetGroup({ paperFill: PAPER, lineFill: PAPER }), SHEET.tilt);
-  return svgDoc(inner);
+/**
+ * 单色层：白纸 + **镂空**的括号与文字线。
+ *
+ * 系统主题图标会把这一层整体着色，所以层内不能靠颜色区分任何东西 ——
+ * 第一版画成纯白剪影（文字线也涂白），预览里就是一张空白方块，概念全丢。
+ * 正确做法是把括号和文字线挖成透明洞（dest-out）：着色后它们透出背景，
+ * 无论系统换成什么颜色，都还认得出「取景框 + 纸 + 文字」。
+ */
+async function renderMonochromeBuffer() {
+  const paper = svgDoc(placed(paperOnly({ fill: PAPER }), SHEET.tilt));
+  const holes = svgDoc(placed(linesOnly({ fill: PAPER }) + bracketGroup({ fill: PAPER }), SHEET.tilt));
+  const base = await sharp(Buffer.from(paper)).png().toBuffer();
+  const mask = await sharp(Buffer.from(holes)).png().toBuffer();
+  return sharp(base).composite([{ input: mask, blend: 'dest-out' }]).png().toBuffer();
 }
 
 /** 启动图：暖米白底 + 靛蓝纸（启动页不该是第二块广告，颜色反过来更安静） */
@@ -248,7 +268,9 @@ async function main() {
   const full = await writePng(fullSvg, path.join(ASSETS, 'icon.png'));
   await writePng(svgDoc(`<rect width="${SIZE}" height="${SIZE}" fill="${ACCENT}"/>`), path.join(ASSETS, 'android-icon-background.png'));
   await writePng(renderForeground(), path.join(ASSETS, 'android-icon-foreground.png'));
-  await writePng(renderMonochrome(), path.join(ASSETS, 'android-icon-monochrome.png'));
+  const mono = await renderMonochromeBuffer();
+  fs.writeFileSync(path.join(ASSETS, 'android-icon-monochrome.png'), mono);
+  console.log(`saved assets/android-icon-monochrome.png (${mono.length} bytes，镂空单色层)`);
   await writePng(renderSplash(), path.join(ASSETS, 'splash-icon.png'));
   await writePng(fullSvg, path.join(ASSETS, 'favicon.png'), 48);
 
