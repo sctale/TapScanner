@@ -100,6 +100,9 @@ class ScannerModule(reactContext: ReactApplicationContext) :
         map.putArray("quad", pointsToArray(quad.points))
         map.putBoolean("detected", quad.detected)
         map.putDouble("confidence", quad.confidence)
+        // 用了哪条路 + 检出区域占多少：界面上如实标出来，真机出问题时一张截图就知道该查哪条腿
+        map.putString("source", quad.source)
+        map.putDouble("areaRatio", quad.areaRatio)
         map.putDouble("width", full.cols().toDouble())
         map.putDouble("height", full.rows().toDouble())
         map.putDouble("rotationDegrees", exif.rotationDegrees.toDouble())

@@ -32,6 +32,10 @@ keystore/
 # QA 台跑批产物（前后对比图 + metrics JSON，体积大且可复现）
 qa-out/
 
+# 验证台的桌面版 OpenCV（110MB 二进制，可一条 curl 重新下载，绝不入库）
+# 没有它 tools/verify/run.sh 会自己打印下载地址并退出，不会静默跳过检查。
+tools/verify/lib/
+
 # vscode
 .vscode/
 .idea/

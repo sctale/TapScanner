@@ -123,7 +123,7 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
         setRendered((prev) => ({ ...prev, [capture.uuid]: page }));
         setQuads((prev) => ({ ...prev, [capture.uuid]: page.quad }));
         setModes((prev) => ({ ...prev, [capture.uuid]: mode }));
-        setNote(cropLabel(capture.analyze.detected, capture.analyze.confidence));
+        setNote(cropLabel(capture.analyze.detected, capture.analyze.confidence, capture.analyze.source));
         return page;
       } catch (error) {
         setFailure(recordFailure('process', error, { mode, path: capture.rawPath.slice(-40) }));
@@ -486,6 +486,8 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
               {currentRender.result.width}×{currentRender.result.height} ·{' '}
               {Math.round(currentRender.result.stages.totalMs)}ms ·{' '}
               {currentRender.result.autoCropped ? '自动切边' : '未自动切边'}
+              {/* 检测走了哪条路 + 框占多少：截图过来就能定位，不用连 adb */}
+              {current ? ` · ${current.analyze.source} ${Math.round(current.analyze.areaRatio * 100)}%` : ''}
             </Text>
           ) : null}
 

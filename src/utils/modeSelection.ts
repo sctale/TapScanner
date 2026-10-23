@@ -88,9 +88,16 @@ export function sharpnessLabel(gain: number | null | undefined): string | null {
   return `清晰度 +${percent}%`;
 }
 
-/** 自动切边的可信度说法：检测失败时不能装作切好了 */
-export function cropLabel(detected: boolean, confidence: number): string {
+/**
+ * 自动切边的可信度说法：检测失败时不能装作切好了。
+ *
+ * `source` 是原生报过来「用了哪条路」，只用来把话说准：
+ * full = 纸本来就在画面里铺满了，那不是「切好了」，是「无需切」，
+ * 混在一起说会让用户以为裁过了、结果纸边被留白切掉时找不到原因。
+ */
+export function cropLabel(detected: boolean, confidence: number, source?: string): string {
   if (!detected) return '没找到纸边，用整页 —— 可手动调整四角';
+  if (source === 'full') return '纸面已占满画面，整页处理';
   if (confidence >= 0.72) return '已自动切边';
   if (confidence >= 0.45) return '已自动切边，建议确认一下四角';
   return '边缘不太确定，建议调整四角';

@@ -95,19 +95,40 @@ powershell -ExecutionPolicy Bypass -File scripts\release-app.ps1                
 ## 验证（改算法后必跑）
 
 ```powershell
-npx vitest run        # 47 项：四角几何/letterbox/退化拦截、模式判定表每条分支、PDF 字节结构
+npx vitest run        # 58 项：四角几何/letterbox/退化拦截、模式判定表每条分支、PDF 字节结构
 npx tsc --noEmit
 npx eslint .
 npm run format:check
+bash tools/verify/run.sh   # ← 边界检测验证台（切边质量只能这样验）
 ```
+
+**`tools/verify/run.sh` 是本项目的算法验证台，也是发布脚本的第 3.5 步前置闸。**
+它用 kotlinc（Android Studio 自带那份）把 `native/android` 的**同一份源码**在 JVM 上编译运行，
+桌面版 OpenCV（`tools/verify/lib/opencv-desktop.jar`，org.openpnp 4.9.0，被 gitignore，缺了自己按 run.sh 提示下载）
+加载后跑 10 个合成场景，逐场景断言检出四角与真实纸面的 **IoU**。
+
+为什么值得搭这台：v0.1.4「不会自动裁切」的根因有三个（细线轮廓、Canny 阈值挂在亮度上、缺亮区腿），
+**每一个在真机上都只表现为同一句「没裁」**，只能靠中间量分辨。所以：
+
+- 改 `QuadDetect`/`DocPipeline` 的**任何**阈值或步骤，先加/跑场景，别看真机照片。
+- 验证台需要调私有步骤时，把函数降成 `internal`（同一次 kotlinc 编译 = 同一模块，测的是真闸门，不是复刻的假闸门），**不要**在测试里抄一份实现。
+- 场景失败时它会自动打印中间量（二分阈值 / 掩膜占比 / Canny 阈值 / 闭前边缘占比 / 四边形拟合结果 / 边界支撑），
+  读数定位比换手机试照片快两个数量级。
+- 用到的 OpenCV API 在 4.9 桌面版与 4.13 设备 AAR 上签名一致（已逐个 `javap` 比对），
+  所以这里的绿是有效信号；但最终仍要 release 包上真机拍一次。
+
+Windows 侧的两个坑（脚本里已经处理，改脚本时别退回）：`kotlinc.bat`/`java.exe` 只吃
+`C:\...` 形式的 classpath（MSYS 的 `/d/...` 和 `:` 分隔会直接 `InvalidPathException`），
+以及 `-Dfile.encoding` 这类 `-D` 参数在 Git Bash 里要整体加引号。
 
 真机侧（我看不见屏幕，靠这两条拿证据）：
 
+- 审核页参数行现在带 `source areaRatio`（如 `bright 33%`）—— 一张截图就知道检测走了哪条腿、框多大。
 - 管理 → 关于与自检：显示 OpenCV 版本/ABI，并对最近一份文档的第一张 raw 跑一次 `probe`（解码→缩放→编码），回报尺寸与耗时。
 - `process` 返回 `stages`（decode/warp/enhance/encode 各段毫秒）与 `metricsBefore/After`，写进 `pages.metrics`；
   慢机型一张截图就能自报。界面上的「清晰度 +N%」只在 `sharpnessGain > 1.05` 时出现。
 
-必须真机才能定的事（别当成已验证）：各机型实际出图分辨率与对焦速度、光照复杂下的切边成功率、单页真实耗时、
+必须真机才能定的事（别当成已验证）：各机型实际出图分辨率与对焦速度、合成图覆盖不到的真实光照（逆光、台灯硬影）下的切边成功率、单页真实耗时、
 黑白档在 Samsung 屏幕上读起来是「干净」还是「麻点」。
 
 ---

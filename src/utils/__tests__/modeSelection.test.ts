@@ -119,6 +119,14 @@ describe('cropLabel', () => {
     expect(cropLabel(true, 0.5)).toContain('建议确认');
     expect(cropLabel(true, 0.2)).toContain('不太确定');
   });
+
+  it('纸铺满画面要说「整页处理」，不能谎称切过边', () => {
+    // full 这条路的 confidence 是固定 0.55，落进「建议确认」区间会被误读成切歪了
+    expect(cropLabel(true, 0.55, 'full')).toBe('纸面已占满画面，整页处理');
+    // 其余来源照常按置信度说话（不带 source 的旧调用也不能变）
+    expect(cropLabel(true, 0.8, 'bright')).toBe('已自动切边');
+    expect(cropLabel(true, 0.8)).toBe('已自动切边');
+  });
 });
 
 describe('safeMode', () => {

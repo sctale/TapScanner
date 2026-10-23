@@ -86,6 +86,30 @@ try {
   & npx prettier --check "src/**/*.{ts,tsx}" | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "Prettier 格式检查未通过（先跑 npm run format）。" }
 
+  # ---------- 3.5 边界检测的 JVM 验证台（切边质量唯一能自动化的判据） ----------
+  # 这条腿必须在 prebuild 之前：它跑的就是要打进 APK 的那份 QuadDetect.kt，
+  # 场景 IoU 掉下来说明「自动裁切」退化成了回退框 —— 那是用户最先看见的故障。
+  Write-Host "==> 边界检测验证台（10 个合成场景 + IoU 断言）" -ForegroundColor Cyan
+  $verifySh = Join-Path $root 'tools\verify\run.sh'
+  if (-not (Test-Path $verifySh)) { Fail "缺少 tools/verify/run.sh。" }
+  if (-not (Test-Path (Join-Path $root 'tools\verify\lib\opencv-desktop.jar'))) {
+    Fail "缺少 tools/verify/lib/opencv-desktop.jar（离线补一次：见 run.sh 开头的提示）。"
+  }
+  # PS 5.1 没有 ?? 运算符（那是 7+ 的东西），写 ?? 会在解析期就炸整个脚本
+  $bash = $null
+  foreach ($candidate in @("$env:PROGRAMFILES\Git\bin\bash.exe", "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")) {
+    if ($candidate -and (Test-Path $candidate)) { $bash = $candidate; break }
+  }
+  if (-not $bash) {
+    $cmd = Get-Command bash.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $bash = $cmd.Source }
+  }
+  if (-not $bash) { Fail "找不到 bash.exe，跑不了验证台（别绕过这一步）。" }
+  Write-Host "    用 $bash 跑 tools/verify/run.sh" -ForegroundColor Gray
+  # 反斜杠路径 Git Bash 认不了（会当成转义），统一换成 /
+  & $bash ($verifySh -replace '\\', '/')
+  if ($LASTEXITCODE -ne 0) { Fail "边界检测验证台未通过（$LASTEXITCODE）：切边质量退化，先看哪个场景 FAIL。" }
+
   # ---------- 4. prebuild（一律 --clean，杜绝 android/ 与 app.json 漂移） ----------
   if (-not (Test-Path (Join-Path $root 'keystore.properties'))) { Fail "缺少 keystore.properties，禁止发布。" }
   $env:TAPSCANNER_REQUIRE_RELEASE_SIGNING = '1'

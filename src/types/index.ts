@@ -45,6 +45,14 @@ export interface AnalyzeResult {
   /** true = 真检测到纸边；false = 回退框，界面要提示用户确认 */
   detected: boolean;
   confidence: number;
+  /**
+   * 原生用了哪条路：bright 亮区 / dark 暗区 / edge 梯度边缘 / full 纸铺满画面 /
+   * rect 最小外接矩形 / inset 回退内缩框。
+   * 出问题时看这个字段就知道该查哪条腿，不用靠猜。
+   */
+  source: string;
+  /** 检出四边形占画面面积比 */
+  areaRatio: number;
   /** 原图（已按 EXIF 转正后）尺寸 */
   width: number;
   height: number;
