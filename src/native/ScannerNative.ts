@@ -20,6 +20,7 @@ export interface ScannerNativeModule {
     path: string,
     outPath: string,
     thumbPath: string,
+    previewPath: string,
     quad: number[] | null,
     mode: ScanMode,
     outputMaxSide: number,
@@ -51,43 +52,7 @@ function resolveScannerModule(): ScannerNativeModule | null {
 /** 非 Android、原生模块未注入、或读取时抛错 —— 一律 null */
 export const ScannerModule: ScannerNativeModule | null = resolveScannerModule();
 
-/** 原生侧 reject 的错误码，逐条对照 native/android/ScanErrors.kt（改那边必须同步这里） */
-export const SCANNER_ERRORS = {
-  OPENCV: 'ERR_OPENCV',
-  DECODE: 'ERR_DECODE',
-  ENCODE: 'ERR_ENCODE',
-  CANCELLED: 'ERR_CANCELLED',
-  NATIVE: 'ERR_NATIVE',
-  NOT_READY: 'ERR_NOT_READY',
-  BAD_INPUT: 'ERR_BAD_INPUT',
-  NO_ACTIVITY: 'ERR_NO_ACTIVITY',
-} as const;
-
-/** 错误码 → 用户能看懂的一句话（原生 message 通常更长，作为补充带上） */
-export function scannerErrorMessage(code?: string, message?: string): string {
-  const detail = message ? `（${message}）` : '';
-  switch (code) {
-    case SCANNER_ERRORS.OPENCV:
-    case SCANNER_ERRORS.NOT_READY:
-      return '图像引擎没加载成功，重启一次试试';
-    case SCANNER_ERRORS.DECODE:
-      return `这张图读不出来${detail}`;
-    case SCANNER_ERRORS.ENCODE:
-      return `图片保存失败${detail}`;
-    case SCANNER_ERRORS.BAD_INPUT:
-      return `参数不对${detail}`;
-    case SCANNER_ERRORS.CANCELLED:
-      return '已取消处理';
-    default:
-      return message ? `处理失败：${message}` : '处理失败，请重试';
-  }
-}
-
-/** 从 reject 出来的 error 上取错误码（RN 的 NativeError 带 code，但不是每个环境都有） */
-export function scannerErrorCode(error: unknown): string | undefined {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'string' ? code : undefined;
-}
+export { SCANNER_ERRORS, scannerErrorCode, scannerErrorMessage } from './errorText';
 
 export class ScannerUnavailable extends Error {
   constructor() {
@@ -118,6 +83,8 @@ export interface ProcessArgs {
   path: string;
   outPath: string;
   thumbPath: string;
+  /** 1200px 预览图落地路径；留空 = 原生不写预览 */
+  previewPath?: string;
   /** 归一化四角；null = 让原生自动检测 */
   quad: QuadPoint[] | null;
   mode: ScanMode;
@@ -138,6 +105,7 @@ export function processPage(args: ProcessArgs) {
     args.path,
     args.outPath,
     args.thumbPath,
+    args.previewPath ?? '',
     flat,
     args.mode,
     args.outputMaxSide ?? 3000,

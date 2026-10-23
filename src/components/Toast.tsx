@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONT_SIZE, RADIUS, SPACING } from '../constants';
 
@@ -10,6 +10,8 @@ export interface ToastState {
   message: string;
   type: ToastType;
   seq: number; // 每次 showToast 自增，保证同文案也能重置定时器（v0.11）
+  /** 行动点（撤销 / 重试 / 打开）。有行动点时这一层必须能吃手势 */
+  action?: { label: string; onPress: () => void };
 }
 
 // ===== 全局 Toast 状态（模块级单例）=====
@@ -29,14 +31,26 @@ function emit(): void {
   listeners.forEach((l) => l());
 }
 
-export function showToast(message: string, type: ToastType = 'success', duration = 2000): void {
-  state = { visible: true, message, type, seq: state.seq + 1 };
+/**
+ * @param duration 省略时按类型给：error 4500（长错误 2 秒读不完，走查 audit-18）、其余 2000。
+ */
+export function showToast(
+  message: string,
+  type: ToastType = 'success',
+  duration?: number,
+  action?: { label: string; onPress: () => void },
+): void {
+  const ms = duration ?? (type === 'error' ? 4500 : 2000);
+  state = { visible: true, message, type, seq: state.seq + 1, action };
   emit();
   if (hideTimer) clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    hideTimer = null;
-    hideToast();
-  }, duration);
+  hideTimer = setTimeout(
+    () => {
+      hideTimer = null;
+      hideToast();
+    },
+    action ? Math.max(ms, 5000) : ms,
+  );
 }
 
 export function hideToast(): void {
@@ -87,10 +101,11 @@ export default function Toast({ anchor = 'top' }: Props = {}) {
   const bgColor =
     current.type === 'error' ? COLORS.danger : current.type === 'info' ? COLORS.accent : COLORS.success;
 
-  // pointerEvents="none"：这一层永远不吃手势，页面在它下面照常可点
+  // 没有行动点时这一层永远不吃手势，页面在它下面照常可点；
+  // 有行动点（撤销/重试）时必须让气泡自己可点，其余区域仍然穿透。
   return (
     <View
-      pointerEvents="none"
+      pointerEvents="box-none"
       style={[
         styles.container,
         anchor === 'center' ? styles.containerCenter : { top: insets.top + SPACING.sm },
@@ -101,6 +116,20 @@ export default function Toast({ anchor = 'top' }: Props = {}) {
         style={[styles.bubble, { backgroundColor: bgColor, opacity, transform: [{ translateY }] }]}
       >
         <Text style={styles.text}>{current.message}</Text>
+        {current.action ? (
+          <Pressable
+            style={styles.action}
+            accessibilityRole="button"
+            accessibilityLabel={current.action.label}
+            onPress={() => {
+              const run = current.action?.onPress;
+              hideToast();
+              run?.();
+            }}
+          >
+            <Text style={styles.actionText}>{current.action.label}</Text>
+          </Pressable>
+        ) : null}
       </Animated.View>
     </View>
   );
@@ -134,4 +163,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  action: {
+    marginLeft: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.xs,
+    borderRadius: RADIUS.pill,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  actionText: { color: COLORS.white, fontSize: FONT_SIZE.sm, fontWeight: '700' },
 });

@@ -65,6 +65,8 @@ export interface AnalyzeResult {
 export interface ProcessResult {
   outPath: string;
   thumbPath: string;
+  /** 1200px 预览图（审核页与四角层用它，不碰全分辨率成品）；空串 = 没写 */
+  previewPath: string;
   width: number;
   height: number;
   mode: ScanMode;
@@ -94,6 +96,17 @@ export interface ReadyInfo {
   abi: string;
 }
 
+/** PDF 页面尺寸策略：auto = 每页跟随自己的比例；a4/letter = 等比放进固定纸张画布留白 */
+export type PageSizeMode = 'auto' | 'a4' | 'letter';
+
+/** 出成品时用哪一套参数（唯一真源见 src/utils/renderOptions.ts） */
+export interface RenderOptions {
+  autoCrop?: boolean;
+  outputMaxSide?: number;
+  jpegQuality?: number;
+  pageSizeMode?: PageSizeMode;
+}
+
 export interface PdfResult {
   outPath: string;
   pages: number;
@@ -108,6 +121,7 @@ export interface PageRecord {
   position: number;
   rawPath: string;
   outPath: string;
+  /** 1200px 预览：用 previewFromOutPath(outPath) 推导，不落库（同目录同 uuid，纯函数关系） */
   thumbPath: string;
   mode: ScanMode;
   quad: QuadPoint[] | null;
@@ -127,6 +141,8 @@ export interface DocumentRecord {
   coverPath: string | null;
   pdfPath: string | null;
   starred: boolean;
+  /** >0 = 在回收站里（值 = 丢进去的时间戳）；0 = 正常 */
+  deletedAt: number;
   createdAt: number;
   updatedAt: number;
 }

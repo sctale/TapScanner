@@ -3,30 +3,53 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { File } from 'expo-file-system';
-import { COLORS, CARD, FONT_SIZE, RADIUS, SCAN_MODES, SPACING } from '../constants';
-import { listDocuments } from '../database/scannerDB';
+import { COLORS, CARD, FONT_SIZE, RADIUS, SCAN_MODES, SPACING, TOUCH } from '../constants';
+import {
+  countTrash,
+  deleteDocument,
+  listDocuments,
+  listTrash,
+  purgeExpiredTrash,
+  restoreDocument,
+} from '../database/scannerDB';
 import { directoryBytes, formatBytes, listDocumentDirs, deleteDocumentFiles } from '../utils/scanFiles';
 import { loadSettings, updateSettings, type AppSettings } from '../utils/appSettings';
-import { isEngineReady, probeImage, scannerErrorMessage } from '../native/ScannerNative';
+import { analyzeImage, isEngineReady, scannerErrorMessage } from '../native/ScannerNative';
 import { exportBackupJson, importBackupJson } from '../utils/backup';
 import { formatFailure, lastFailure, subscribeFailure } from '../utils/diagnostics';
 import { useBackHandler } from '../hooks/useBackHandler';
 import { showToast } from '../components/Toast';
-import type { ReadyInfo } from '../types';
+import type { DocumentRecord, ReadyInfo } from '../types';
 
-type Page = 'main' | 'storage' | 'about';
+type Page = 'main' | 'storage' | 'about' | 'trash';
 
 /**
  * 管理页：入口列表 + 二级页（iOS 设置页标准结构，沿用 TapLedger 约定）。
  * 副标题只说一句话，隐私说明放这里而不是弹窗。
  */
-export default function ManageScreen() {
+interface Props {
+  active: boolean;
+  /** 停在二级页时要告诉根层：TabBar 隐藏、返回键归这一层（走查 audit-19） */
+  onSubOpenChange: (open: boolean) => void;
+}
+
+export default function ManageScreen({ active, onSubOpenChange }: Props) {
   const insets = useSafeAreaInsets();
   const [page, setPage] = useState<Page>('main');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [engine, setEngine] = useState<ReadyInfo | null>(null);
+  const [trashCount, setTrashCount] = useState(0);
 
-  useBackHandler(page !== 'main', () => setPage('main'));
+  useEffect(() => {
+    onSubOpenChange(active && page !== 'main');
+  }, [active, page, onSubOpenChange]);
+  useEffect(() => {
+    if (!active) return;
+    void countTrash().then(setTrashCount);
+  }, [active, page]);
+
+  // 只有这个 Tab 真的在前台时才吃返回键 —— 否则会把别的 Tab 的返回抢走（audit-19）
+  useBackHandler(active && page !== 'main', () => setPage('main'));
 
   useEffect(() => {
     (async () => {
@@ -37,6 +60,11 @@ export default function ManageScreen() {
 
   if (page === 'storage') {
     return <StoragePage onBack={() => setPage('main')} />;
+  }
+  if (page === 'trash') {
+    return (
+      <TrashPage onBack={() => setPage('main')} onChanged={() => void countTrash().then(setTrashCount)} />
+    );
   }
   if (page === 'about') {
     return <AboutPage engine={engine} onBack={() => setPage('main')} />;
@@ -88,13 +116,41 @@ export default function ManageScreen() {
           ]}
           value={settings?.outputMaxSide ?? 3000}
           onChange={async (v) => setSettings(await updateSettings({ outputMaxSide: Number(v) }))}
-          hint="长边像素数。3000 够打印 A4，4000 会更慢更大"
+          hint="长边像素数。3000 适合发微信/打印，4000 出图更大也更慢"
+        />
+        <SegmentRow
+          label="PDF 页面尺寸"
+          options={[
+            { value: 'auto', label: '自适应' },
+            { value: 'a4', label: 'A4' },
+            { value: 'letter', label: 'Letter' },
+          ]}
+          value={settings?.pdfPageSize ?? 'auto'}
+          onChange={async (v) =>
+            setSettings(await updateSettings({ pdfPageSize: String(v) as 'auto' | 'a4' | 'letter' }))
+          }
+          hint="自适应 = 每页跟随照片比例；选 A4/Letter 会把每页等比放进固定纸张画布并留白（内容一个像素都不裁）"
+        />
+        <SegmentRow
+          label="成品图质量"
+          options={[
+            { value: 80, label: '小' },
+            { value: 92, label: '标准' },
+            { value: 100, label: '最大' },
+          ]}
+          value={settings?.jpegQuality ?? 92}
+          onChange={async (v) => setSettings(await updateSettings({ jpegQuality: Number(v) }))}
+          hint="只影响成品 JPEG 的压缩率；相机原图（raw）永远原样保留，之后换档重跑不会掉画质"
         />
       </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionLabel}>数据</Text>
         <EntryRow label="存储占用与清理" onPress={() => setPage('storage')} />
+        <EntryRow
+          label={trashCount > 0 ? `回收站（${trashCount} 份）` : '回收站'}
+          onPress={() => setPage('trash')}
+        />
         <BackupRows />
       </View>
 
@@ -219,8 +275,10 @@ function BackupRows() {
   return (
     <Row>
       <View style={styles.rowBody}>
-        <Text style={styles.rowLabel}>备份</Text>
-        <Text style={styles.hint}>导出记录与图片清单；图片本身在手机上，换机需要重新扫描</Text>
+        <Text style={styles.rowLabel}>导出记录（不含扫描件）</Text>
+        <Text style={styles.hint}>
+          导出的是文档结构与设置的 JSON；图片仍在这台手机上，换机时要把 scans 目录一起搬过去，否则导入后没有图
+        </Text>
       </View>
       <View style={styles.inlineActions}>
         <Pressable style={styles.miniBtn} disabled={busy} onPress={() => void doExport()}>
@@ -231,6 +289,121 @@ function BackupRows() {
         </Pressable>
       </View>
     </Row>
+  );
+}
+
+/**
+ * 回收站（走查 audit-2/audit-3 的落地）。
+ *
+ * 「删了就没了」是这类工具最不可原谅的故障：扫描件往往是合同、票据，重拍不了。
+ * 现在删除一律先进这里，30 天后才被真正清掉。
+ */
+function TrashPage({ onBack, onChanged }: { onBack: () => void; onChanged: () => void }) {
+  const insets = useSafeAreaInsets();
+  const [rows, setRows] = useState<DocumentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRows(await listTrash());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const restore = async (doc: DocumentRecord) => {
+    setBusy(true);
+    await restoreDocument(doc.id);
+    await reload();
+    onChanged();
+    showToast(`「${doc.title}」已恢复`, 'success');
+    setBusy(false);
+  };
+
+  const destroy = async (doc: DocumentRecord) => {
+    setBusy(true);
+    const uuid = await deleteDocument(doc.id);
+    deleteDocumentFiles(uuid ?? doc.uuid);
+    await reload();
+    onChanged();
+    showToast('已彻底删除，找不回来了', 'info');
+    setBusy(false);
+  };
+
+  const purgeOld = async () => {
+    setBusy(true);
+    const uuids = await purgeExpiredTrash();
+    uuids.forEach((uuid) => deleteDocumentFiles(uuid));
+    await reload();
+    onChanged();
+    showToast(
+      uuids.length > 0 ? `清掉了 ${uuids.length} 份过期文档` : '没有过期的（30 天内都还能恢复）',
+      'info',
+    );
+    setBusy(false);
+  };
+
+  return (
+    <View style={styles.container}>
+      <View style={{ height: insets.top + SPACING.sm }} />
+      <View style={styles.nav}>
+        <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" accessibilityLabel="返回">
+          <Text style={styles.back}>‹ 返回</Text>
+        </Pressable>
+        <Text style={styles.navTitle}>回收站</Text>
+        <View style={{ minWidth: 60 }} />
+      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.hint}>
+          删除的文档在这里保留 30 天。扫描件只存在这台手机上，没有云端备份 —— 这里清空就真的没了。
+        </Text>
+        <Pressable
+          style={[styles.miniBtnWide, (busy || rows.length === 0) && styles.disabled]}
+          disabled={busy || rows.length === 0}
+          onPress={() => void purgeOld()}
+          accessibilityRole="button"
+        >
+          <Text style={styles.miniBtnText}>清掉超过 30 天的</Text>
+        </Pressable>
+        {loading ? <ActivityIndicator color={COLORS.accent} /> : null}
+        {!loading && rows.length === 0 ? <Text style={styles.hint}>回收站是空的。</Text> : null}
+        {rows.map((doc) => (
+          <View key={doc.id} style={styles.card}>
+            <Text style={styles.rowLabel} numberOfLines={1}>
+              {doc.title}
+            </Text>
+            <Text style={styles.hint}>
+              {doc.pageCount} 页 · {new Date(doc.deletedAt).toLocaleDateString()} 删除
+            </Text>
+            <View style={styles.inlineActions}>
+              <Pressable
+                style={styles.miniBtn}
+                disabled={busy}
+                onPress={() => void restore(doc)}
+                accessibilityRole="button"
+              >
+                <Text style={styles.miniBtnText}>恢复</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.miniBtn, styles.miniBtnDanger]}
+                disabled={busy}
+                onPress={() => void destroy(doc)}
+                accessibilityRole="button"
+                accessibilityLabel="彻底删除，不可恢复"
+              >
+                <Text style={[styles.miniBtnText, { color: COLORS.danger }]}>彻底删除</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -247,8 +420,15 @@ function StoragePage({ onBack }: { onBack: () => void }) {
     setLoading(true);
     try {
       const documents = await listDocuments();
+      // 分批算：原来一个 for 同步遍历所有文档目录，文档一多就把 JS 线程钉住，
+      // 用户看到的是管理页白屏（走查 audit-44）
       let total = 0;
-      for (const doc of documents) total += directoryBytes(doc.uuid);
+      const chunk = 6;
+      for (let i = 0; i < documents.length; i += chunk) {
+        const slice = documents.slice(i, i + chunk);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        for (const doc of slice) total += directoryBytes(doc.uuid);
+      }
       const known = new Set(documents.map((d) => d.uuid));
       const orphans = listDocumentDirs().filter((name) => !known.has(name));
       setRows({ total, docs: documents.length, orphans });
@@ -333,9 +513,12 @@ function AboutPage({ engine, onBack }: { engine: ReadyInfo | null; onBack: () =>
   );
 
   /**
-   * 自检：拿最近一份文档的第一页 raw 走一遍探针（解码 → 缩放 → 编码）。
-   * 目的是让真机上的「图像层通不通」变成屏幕上能直接看到的一行字，
-   * 而不是靠我猜 —— 完整 6 样张跑批（tools/scan-sample）留在 v0.2。
+  /**
+   * 自检：拿最近一份文档的第一页 raw 真跑一遍「解码 → 缩放 → 边界检测」。
+   *
+   * 原来这一步只做探针（解码→缩放→编码），名字却叫「自检」，用户会以为它验的是扫描质量。
+   * 现在顺手跑 QuadDetect：把走了哪条腿、框占多少画面报出来 ——
+   * 真机遇到「没裁切」时，这一行就是我要的证据，不用来回猜（走查 audit-37）。
    */
   const runSelfTest = useCallback(async () => {
     setBusy(true);
@@ -355,11 +538,12 @@ function AboutPage({ engine, onBack }: { engine: ReadyInfo | null; onBack: () =>
         return;
       }
       const src = new File(dir, candidates[0].name);
-      const out = new File(dir, 'selftest_probe.jpg');
-      const result = await probeImage(src.uri, out.uri, 1200);
+      const result = await analyzeImage(src.uri, 1200);
       setSelfTest(
-        `探针通过：${Math.round(result.sourceWidth)}×${Math.round(result.sourceHeight)} → ` +
-          `${Math.round(result.width)}×${Math.round(result.height)}，耗时 ${Math.round(result.elapsedMs)}ms`,
+        `通过：${Math.round(result.width)}×${Math.round(result.height)} · ` +
+          `检测走「${result.source}」这条路 · 框占画面 ${Math.round(result.areaRatio * 100)}% · ` +
+          `置信度 ${result.confidence.toFixed(2)} · 耗时 ${Math.round(result.totalMs)}ms` +
+          (result.detected ? '' : '（这张图没检出纸边，会按整页处理）'),
       );
     } catch (error) {
       setSelfTest(scannerErrorMessage(undefined, (error as Error)?.message));
@@ -463,8 +647,10 @@ const styles = StyleSheet.create({
   },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
   chip: {
+    minHeight: TOUCH.min,
+    justifyContent: 'center',
     paddingHorizontal: SPACING.md,
-    paddingVertical: 8,
+    paddingVertical: SPACING.sm,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
     borderColor: COLORS.borderSubtle,
@@ -494,8 +680,8 @@ const styles = StyleSheet.create({
   entryLabel: { fontSize: FONT_SIZE.md, color: COLORS.text, fontWeight: '600' },
   chevron: { fontSize: FONT_SIZE.lg, color: COLORS.textTertiary },
   switchTrack: {
-    width: 46,
-    height: 28,
+    width: 48,
+    height: 30,
     borderRadius: RADIUS.pill,
     backgroundColor: COLORS.bgAlt,
     padding: 3,
@@ -503,8 +689,8 @@ const styles = StyleSheet.create({
   },
   switchTrackOn: { backgroundColor: COLORS.accent },
   switchKnob: {
-    width: 22,
-    height: 22,
+    width: 24,
+    height: 24,
     borderRadius: RADIUS.pill,
     backgroundColor: COLORS.white,
   },
@@ -517,11 +703,19 @@ const styles = StyleSheet.create({
     padding: 3,
     borderRadius: RADIUS.pill,
   },
-  segmentItem: { flex: 1, paddingVertical: 7, borderRadius: RADIUS.pill, alignItems: 'center' },
+  segmentItem: {
+    flex: 1,
+    minHeight: TOUCH.min,
+    justifyContent: 'center',
+    paddingVertical: SPACING.sm,
+    borderRadius: RADIUS.pill,
+    alignItems: 'center',
+  },
   segmentItemActive: { backgroundColor: COLORS.accent },
   segmentText: { fontSize: FONT_SIZE.sm, color: COLORS.textSecondary, fontWeight: '600' },
   segmentTextActive: { color: COLORS.white },
   inlineActions: { flexDirection: 'row', gap: SPACING.sm },
+  miniBtnDanger: { borderColor: COLORS.danger },
   miniBtn: {
     paddingHorizontal: SPACING.md,
     paddingVertical: 7,

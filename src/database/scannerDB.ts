@@ -88,6 +88,15 @@ export async function initDatabase(): Promise<void> {
     'stages',
     "ALTER TABLE pages ADD COLUMN stages TEXT NOT NULL DEFAULT ''",
   );
+  // v0.2 回收站：删除先打标记、文件原地不动，30 天内可恢复。
+  // 走查里两条 blocker 的共同根因都是「一次误触就物理删掉全部图片」，软删是唯一根治办法。
+  await ensureColumn(
+    database,
+    'documents',
+    'deleted_at',
+    'ALTER TABLE documents ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0',
+  );
+  await database.execAsync('CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(deleted_at);');
 }
 
 // ---------- documents ----------
@@ -100,6 +109,7 @@ interface DocumentRow {
   updated_at: number;
   pdf_path: string;
   starred: number;
+  deleted_at?: number;
   page_count?: number;
   cover_path?: string;
 }
@@ -113,6 +123,7 @@ function toDocument(row: DocumentRow): DocumentRecord {
     coverPath: row.cover_path ?? null,
     pdfPath: row.pdf_path !== '' ? row.pdf_path : null,
     starred: row.starred === 1,
+    deletedAt: row.deleted_at ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -140,21 +151,47 @@ export async function createDocument(title: string, uuid?: string): Promise<Docu
     coverPath: null,
     pdfPath: null,
     starred: false,
+    deletedAt: 0,
     createdAt: now,
     updatedAt: now,
   };
 }
 
+/** 列表排序（走查 audit-30：原来 SQL 里写死 starred + 更新时间，用户完全换不了） */
+export type DocumentSort = 'updated' | 'created' | 'title' | 'pages';
+
+const SORT_SQL: Record<DocumentSort, string> = {
+  updated: 'd.updated_at DESC',
+  created: 'd.created_at DESC',
+  title: 'd.title COLLATE NOCASE ASC',
+  pages: 'page_count DESC',
+};
+
+export interface ListDocumentsOptions {
+  /** 标题模糊搜索 */
+  query?: string;
+  sort?: DocumentSort;
+  /** true = 只列回收站里的；默认只列没删的 */
+  trashed?: boolean;
+}
+
 /** 文档列表（带页数与封面缩略图，一次查完避免列表页 N+1） */
-export async function listDocuments(): Promise<DocumentRecord[]> {
+export async function listDocuments(options: ListDocumentsOptions = {}): Promise<DocumentRecord[]> {
   const database = await getDB();
+  const sort = SORT_SQL[options.sort ?? 'updated'] ?? SORT_SQL.updated;
+  const like = (options.query ?? '').trim();
+  const where = options.trashed ? 'd.deleted_at > 0' : 'd.deleted_at = 0';
+  const clause = like.length > 0 ? where + ' AND d.title LIKE ?' : where;
+  const args = like.length > 0 ? ['%' + like + '%'] : [];
   const rows = await database.getAllAsync<DocumentRow>(
     `SELECT d.*,
             (SELECT COUNT(*) FROM pages p WHERE p.document_id = d.id) AS page_count,
             (SELECT p.thumb_path FROM pages p
               WHERE p.document_id = d.id ORDER BY p.position ASC LIMIT 1) AS cover_path
        FROM documents d
-      ORDER BY d.starred DESC, d.updated_at DESC`,
+      WHERE ${clause}
+      ORDER BY d.starred DESC, ${sort}`,
+    args,
   );
   return rows.map(toDocument);
 }
@@ -199,13 +236,67 @@ export async function setDocumentPdfPath(id: number, pdfPath: string): Promise<v
   ]);
 }
 
-/** 返回该文档的图片文件相对目录名（uuid），供调用方删文件用；库里只留引用关系 */
+/**
+ * 删除 = 进回收站：只打标记、不碰文件，所以调用方拿到结果也**不要**去删目录。
+ * （旧版这里直接 DELETE + 上层立刻删文件，于是「长按一下就全没了」。）
+ */
+export async function softDeleteDocument(id: number): Promise<void> {
+  const database = await getDB();
+  const now = Date.now();
+  await database.runAsync('UPDATE documents SET deleted_at = ?, updated_at = ? WHERE id = ?', [now, now, id]);
+}
+
+/** 撤销删除 */
+export async function restoreDocument(id: number): Promise<void> {
+  const database = await getDB();
+  await database.runAsync('UPDATE documents SET deleted_at = 0, updated_at = ? WHERE id = ?', [
+    Date.now(),
+    id,
+  ]);
+}
+
+/**
+ * 真正删记录（文件由调用方删）。返回该文档图片目录名（uuid）。
+ * 只在「回收站里彻底删除」与「过期清理」两条路径上调用。
+ */
 export async function deleteDocument(id: number): Promise<string | null> {
   const database = await getDB();
   const row = await database.getFirstAsync<{ uuid: string }>('SELECT uuid FROM documents WHERE id = ?', [id]);
   // pages 由 ON DELETE CASCADE 处理；PRAGMA foreign_keys 已在 initDatabase 打开
   await database.runAsync('DELETE FROM documents WHERE id = ?', [id]);
   return row?.uuid ?? null;
+}
+
+/** 回收站列表 */
+export async function listTrash(): Promise<DocumentRecord[]> {
+  return listDocuments({ trashed: true });
+}
+
+/** 回收站里有几份（管理页角标用） */
+export async function countTrash(): Promise<number> {
+  const database = await getDB();
+  const row = await database.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM documents WHERE deleted_at > 0',
+  );
+  return row?.n ?? 0;
+}
+
+/**
+ * 清掉过期回收站（默认 30 天），返回被删掉的目录名，调用方负责删文件。
+ */
+export async function purgeExpiredTrash(maxAgeMs = 30 * 24 * 60 * 60 * 1000): Promise<string[]> {
+  const database = await getDB();
+  const cutoff = Date.now() - maxAgeMs;
+  const rows = await database.getAllAsync<{ id: number; uuid: string }>(
+    'SELECT id, uuid FROM documents WHERE deleted_at > 0 AND deleted_at < ?',
+    [cutoff],
+  );
+  const purged: string[] = [];
+  for (const row of rows) {
+    await database.runAsync('DELETE FROM documents WHERE id = ?', [row.id]);
+    purged.push(row.uuid);
+  }
+  return purged;
 }
 
 export async function touchDocument(id: number): Promise<void> {
@@ -394,6 +485,66 @@ export async function swapPagePositions(documentId: number, aId: number, bId: nu
   await database.runAsync('UPDATE pages SET position = ? WHERE id = ?', [b.position, aId]);
   await database.runAsync('UPDATE pages SET position = ? WHERE id = ?', [a.position, bId]);
   await database.runAsync('UPDATE documents SET updated_at = ? WHERE id = ?', [Date.now(), documentId]);
+}
+
+/** 移到顶部/底部：10 页文档挪一位原来要按 9 次，这个比逐格上移下移实用 */
+export async function movePageToEdge(
+  documentId: number,
+  pageId: number,
+  edge: 'top' | 'bottom',
+): Promise<void> {
+  const database = await getDB();
+  await database.runAsync(
+    edge === 'top'
+      ? 'UPDATE pages SET position = -1 WHERE id = ?'
+      : 'UPDATE pages SET position = 100000 WHERE id = ?',
+    [pageId],
+  );
+  await renumberPages(database, documentId);
+  await database.runAsync('UPDATE documents SET updated_at = ? WHERE id = ?', [Date.now(), documentId]);
+}
+
+/**
+ * 把某一页拆出去单独成一份新文档。
+ *
+ * 只改引用，不搬文件：pages.raw_path/out_path 记的都是绝对路径，
+ * 「目录名 == docUuid」这条约定只对新建的扫描组有意义，对拆出来的单页不成立
+ * （真要搬文件就得连 thumb/preview/pdf 一起搬，漏一个就是「文档打不开」，代价远大于收益）。
+ */
+export async function movePageToNewDocument(
+  pageId: number,
+  title: string,
+): Promise<{ document: DocumentRecord; moved: boolean }> {
+  const database = await getDB();
+  const page = await database.getFirstAsync<{ id: number; document_id: number }>(
+    'SELECT id, document_id FROM pages WHERE id = ?',
+    [pageId],
+  );
+  if (!page) throw new Error('这一页不存在');
+  const source = await getDocument(page.document_id);
+  if (!source) throw new Error('原文档不存在');
+  if (source.pageCount <= 1) return { document: source, moved: false };
+
+  const created = await createDocument(title);
+  await database.runAsync('UPDATE pages SET document_id = ?, position = 0, updated_at = ? WHERE id = ?', [
+    created.id,
+    Date.now(),
+    pageId,
+  ]);
+  await renumberPages(database, source.id);
+  await database.runAsync('UPDATE documents SET updated_at = ? WHERE id = ?', [Date.now(), source.id]);
+  const document = await getDocument(created.id);
+  return { document: document ?? created, moved: true };
+}
+
+async function renumberPages(database: SQLite.SQLiteDatabase, documentId: number): Promise<void> {
+  const rows = await database.getAllAsync<{ id: number }>(
+    'SELECT id FROM pages WHERE document_id = ? ORDER BY position ASC, id ASC',
+    [documentId],
+  );
+  for (let i = 0; i < rows.length; i += 1) {
+    await database.runAsync('UPDATE pages SET position = ? WHERE id = ?', [i, rows[i].id]);
+  }
 }
 
 // ---------- settings ----------

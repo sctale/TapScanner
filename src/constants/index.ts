@@ -2,6 +2,10 @@ import type { ScanMode } from '../types';
 
 // ===== Tap 系列设计令牌（与 TapLedger / TapMate / TapMood 同源）=====
 // 界面颜色/间距/圆角/字号只从这里取，不在页面里写裸值。
+//
+// 对比度是算出来的，不是感觉出来的：v0.2.0 起由 src/utils/__tests__/tokens.test.ts 逐对断言
+// （正文 ≥4.5，大字/图形 ≥3）。这里以前写着「对比度 ≥ WCAG AA」但其实没有 ——
+// 主按钮白字压在 #7986CB 上只有 3.45:1。注释说谎比没注释更糟，所以改成测试守着。
 export const COLORS = {
   background: '#F8F6F3', // 暖米白背景
   bgAlt: '#F3EFE9', // 深一档背景
@@ -9,14 +13,14 @@ export const COLORS = {
   surfaceAlt: '#FFF9F5', // 暖色卡片底
   text: '#2D2D2D', // 深灰主文字
   textSecondary: '#6E6E6E',
-  textTertiary: '#857F78', // 次次级（对比度 ≥ WCAG AA）
+  textTertiary: '#6B655E', // 次次级：v0.2 从 #857F78 加深（原来在白卡上只有 3.96:1）
   border: '#F0EDE8', // 暖灰边框
   borderSubtle: '#E8E4DE',
-  accent: '#7986CB', // 强调靛蓝
-  accentDark: '#5C6BC0',
+  accent: '#7986CB', // 强调靛蓝：描边 / 选中底色 / 装饰。别拿它当按钮底配白字
+  accentDark: '#5C6BC0', // 主按钮底 + 主色文字用这个（配白字 4.86:1）
   accentSoft: 'rgba(121,134,203,0.09)',
-  danger: '#E57373',
-  success: '#81C784',
+  danger: '#C62828', // v0.2 从 #E57373 加深（原来配白字 2.99:1）
+  success: '#2E7D32', // v0.2 从 #81C784 加深（原来配白字 2.01:1）
   white: '#FFFFFF',
   overlay: 'rgba(45,45,45,0.35)', // 遮罩
   // 相机页专用：取景区是深色，文字必须反过来
@@ -27,8 +31,19 @@ export const COLORS = {
   onCameraBorder: 'rgba(255,255,255,0.18)',
   frameGuide: '#FFE082', // 实时边框（暖黄，与选中的靛蓝区分）
   warningBg: '#FFF3E0',
-  warningText: '#E65100',
+  warningText: '#C43E00', // v0.2 从 #E65100 加深（原来在 warningBg 上只有 3.46:1）
 };
+
+/**
+ * 触摸目标下限（Android 无障碍指南 48dp、Apple HIG 44pt，取 44 作为底线）。
+ * v0.2 之前的现状是「全项目 minHeight 出现 0 次」，顶栏「完成」只有约 23dp 高 ——
+ * 所有交互样式统一从这里取值，不要再手写 paddingVertical。
+ */
+export const TOUCH = {
+  min: 44,
+  /** 文字类小按钮的扩描边（不改变视觉高度，只扩大可点区） */
+  slop: 12,
+} as const;
 
 export const SPACING = {
   xs: 4,
@@ -103,13 +118,25 @@ export const SCANNER_EVENTS = {
 // 设置项 key
 export const SETTING_KEYS = {
   DEFAULT_MODE: 'default_mode',
-  AUTO_CROP: 'auto_crop', // 自动切边开关
+  AUTO_CROP: 'auto_crop', // 自动切边的全局默认值（扫描页那个开关是本组会话级，不写这里）
   OUTPUT_MAX_SIDE: 'output_max_side',
   JPEG_QUALITY: 'jpeg_quality',
-  /** v0.2 实时取景边框（VisionCamera 帧处理器）；v0.1 不读不写 */
+  PDF_PAGE_SIZE: 'pdf_page_size', // auto / a4 / letter
+  /** 首启教学看过没（存时间戳，只一次，之后不再打扰） */
+  ONBOARDED_AT: 'onboarded_at',
+  /** v0.2 实时取景边框（VisionCamera 帧处理器）；默认关，真机验过才敢默认开 */
   LIVE_DETECT: 'live_detect',
   LAST_QA_RUN: 'last_qa_run',
 } as const;
+
+/**
+ * 系统字体放大上限。
+ *
+ * RN 的 Text 默认跟随系统字号，但界面里有大量固定高度（页条 62×82、缩略图框 108），
+ * 用户开到 200% 时不是「变大」而是「被裁」。做法是两手：
+ * 固定高度改成 minHeight + 内边距（布局让位），关键标签用这个倍数封顶（文字让位一点）。
+ */
+export const MAX_FONT_MULTIPLIER = 1.4;
 
 // 生成 uuid（沿用 TapLedger 的做法：优先平台 crypto.randomUUID，
 // 拿不到时退回「时间戳 + 进程内递增序号 + 每次启动随机盐 + 随机串」，同毫秒内也不会自撞。

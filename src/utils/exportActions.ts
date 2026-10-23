@@ -1,9 +1,9 @@
 import * as Sharing from 'expo-sharing';
-import { getDocument, listPages } from '../database/scannerDB';
+import { getDocument, listPages, setDocumentPdfPath } from '../database/scannerDB';
 import { buildPdfFromFile, writeBytes } from './pdfWriter';
 import { ensureDirectory, exportDir, exportNamedFile, fileUri, nativePath, stampName } from './scanFiles';
-import { DEFAULT_SCAN_DPI } from './pageSize';
-import type { DocumentRecord } from '../types';
+import { DEFAULT_SCAN_DPI, pagePresetLabel, placeOnSheet } from './pageSize';
+import type { DocumentRecord, PageSizeMode } from '../types';
 
 /**
  * 导出与分享。
@@ -17,9 +17,20 @@ export interface ExportResult {
   path: string;
   pages: number;
   bytes: number;
+  /** 这次用的是哪种页面尺寸（界面要能说清「这份 PDF 是 A4 还是每页跟随原图」） */
+  pageSizeMode: PageSizeMode;
+  /** 文件名（导出可回看要用：App 里必须还有第二个入口能找到它） */
+  fileName: string;
 }
 
-export async function exportDocumentPdf(documentId: number): Promise<ExportResult> {
+export interface ExportOptions {
+  pageSizeMode?: PageSizeMode;
+}
+
+export async function exportDocumentPdf(
+  documentId: number,
+  options: ExportOptions = {},
+): Promise<ExportResult> {
   const document = await getDocument(documentId);
   if (!document) throw new Error('文档不存在');
   const pages = await listPages(documentId);
@@ -31,6 +42,7 @@ export async function exportDocumentPdf(documentId: number): Promise<ExportResul
     throw new Error(`${pages.length - usable.length} 页没有成品图，请重拍那一页再导出`);
   }
 
+  const pageSizeMode = options.pageSizeMode ?? 'auto';
   ensureDirectory(exportDir());
   const bytes = await buildPdfFromFile(
     usable.map((p) => ({
@@ -38,16 +50,24 @@ export async function exportDocumentPdf(documentId: number): Promise<ExportResul
       widthPx: p.width,
       heightPx: p.height,
       dpi: DEFAULT_SCAN_DPI,
+      // auto 保持原样（页面 = 图片本身，零重编码零留白）；选了固定纸张才摆位
+      placement:
+        pageSizeMode === 'auto' ? undefined : placeOnSheet(pageSizeMode, p.width, p.height, DEFAULT_SCAN_DPI),
     })),
     { title: document.title },
   );
-  const file = exportNamedFile(safeFileName(`${stampName(document.title, 'pdf')}`));
+  const fileName = safeFileName(`${stampName(document.title, 'pdf')}`);
+  const file = exportNamedFile(fileName);
   const written = await writeBytes(nativePath(file.uri), bytes);
 
-  // 记在库上，管理页能看出这份文档已经出过 PDF
-  const { setDocumentPdfPath } = await import('../database/scannerDB');
+  // 记在库上：详情页要能「再分享一次」，否则错过系统面板就等于找不回来（走查 audit-10）
   await setDocumentPdfPath(document.id, nativePath(file.uri));
-  return { path: nativePath(file.uri), pages: usable.length, bytes: written };
+  return { path: nativePath(file.uri), pages: usable.length, bytes: written, pageSizeMode, fileName };
+}
+
+/** 这份文档的 PDF 页尺寸怎么称呼（详情页「已导出」那行要用） */
+export function describePdfSize(mode: PageSizeMode): string {
+  return `${pagePresetLabel(mode)} 页面`;
 }
 
 /** 单页成品图直接分享（JPG 原样，不重编码） */

@@ -37,7 +37,7 @@ export function ensureDirectory(dir: Directory): Directory {
   return dir;
 }
 
-/** 页内文件名：raw_ 是相机原图，page_ 是成品，thumb_ 是列表缩略图 */
+/** 页内文件名：raw_ 是相机原图，page_ 是成品，thumb_ 是列表缩略图，preview_ 是界面预览 */
 export const rawFilePattern = /^raw_[A-Za-z0-9-]+\.jpg$/;
 
 export function rawFile(docUuid: string, pageUuid: string): File {
@@ -50,6 +50,32 @@ export function renderFile(docUuid: string, pageUuid: string): File {
 
 export function thumbFile(docUuid: string, pageUuid: string): File {
   return new File(documentDir(docUuid), `thumb_${pageUuid}.jpg`);
+}
+
+/** 1200px 界面预览：审核页/四角层用它，别让 RN 的 Image 去解码 3000~4000px 成品 */
+export function previewFile(docUuid: string, pageUuid: string): File {
+  return new File(documentDir(docUuid), `preview_${pageUuid}.jpg`);
+}
+
+/**
+ * 从成品路径推出同页的预览路径（page_xxx.jpg → preview_xxx.jpg）。
+ *
+ * 为什么不加数据库列：这两个文件永远同目录、同 uuid、同后缀，是纯函数关系；
+ * 加一列就要迁移，而一旦哪条写入路径忘了填，界面拿到空串就只能退回全分辨率图 ——
+ * 推导出来的东西不会漂移。
+ */
+export function previewFromOutPath(outPath: string | null | undefined): string {
+  if (!outPath) return '';
+  const marker = '/page_';
+  const at = outPath.lastIndexOf(marker);
+  if (at < 0) return '';
+  return `${outPath.slice(0, at + 1)}preview_${outPath.slice(at + marker.length)}`;
+}
+
+/** 预览存在就用预览，不存在（旧数据/写入失败）退回全分辨率成品 */
+export function displayPathFor(outPath: string, previewPath: string | null | undefined): string {
+  if (previewPath && fileSize(previewPath) > 0) return previewPath;
+  return outPath;
 }
 
 export function exportNamedFile(fileName: string): File {

@@ -133,6 +133,19 @@ Windows 侧的两个坑（脚本里已经处理，改脚本时别退回）：`ko
 
 ---
 
+## v0.2 新立的规矩（改之前先看）
+
+| 规矩 | 原因 |
+|------|------|
+| 渲染参数只能从 `resolveRenderOptions(settings, overrides)` 拿 | 以前扫描页不带 `jpegQuality`、详情页带，同一页能出两种质量（audit-16） |
+| 颜色令牌的新增/修改必须过 `tokens.test.ts` | 对比度靠感觉必错：`constants` 曾写着「≥ AA」而主按钮实算 3.45:1（audit-32） |
+| 交互样式必须有 `minHeight: TOUCH.min`（44） | 全项目原来 `minHeight` 出现 0 次，「完成」按钮只有 23dp 高（audit-38） |
+| 删除一律 `softDeleteDocument` + 回收站，只有回收站/过期清理可以 `deleteDocument` | 「一次误触就没了」是这类工具最不可原谅的故障（audit-2/3/4） |
+| 面向用户的界面不出现工程指标（`source`/`areaRatio`/ms/亮度锐度） | 这些进「查看检测详情」或自检页，主界面只说结论（audit-12/13） |
+| 会话级开关与全局设置分开，别互相写 | 「自动切边」在两处各有一套状态，就是 audit-15 的成因 |
+| 原生新增错误码必须同时补 `src/native/errorText.ts` | `errorCodes.test.ts` 会直接读 `ScanErrors.kt` 比对，漏了测试就红 |
+| 预览图路径由 `previewFromOutPath(outPath)` 推导，不加数据库列 | 同目录同 uuid 的纯函数关系；加了列就有一条忘了填的写入路径（audit-43） |
+
 ## 界面规范（Tap 系列一致性）
 
 | 规则 | 原因 |

@@ -103,6 +103,25 @@ export function cropLabel(detected: boolean, confidence: number, source?: string
   return '边缘不太确定，建议调整四角';
 }
 
+/**
+ * 文档默认标题：时间戳最实用，但保存那一刻会给用户改的机会（走查 audit-29）。
+ * 放这里而不是组件里，是为了能被单测钉住（组件里的同名函数在 node 环境 import 不动）。
+ */
+export function defaultTitle(now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `扫描 ${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(
+    now.getMinutes(),
+  )}`;
+}
+
+/**
+ * 初始档位：自动决策优先，用户设置兜底（走查 audit-21：suggestMode 以前算完只是显示，从不影响档位）。
+ * 只有规则真的命中（摩尔纹 / 糊图 / 阴影…）才替用户选，rule='default' 不越权。
+ */
+export function pickInitialMode(rule: string, suggested: ScanMode, fallback: ScanMode): ScanMode {
+  return rule && rule !== 'default' ? suggested : fallback;
+}
+
 /** 模式在界面上的顺序（与 constants 的 SCAN_MODES 一致，测试用来防漂移） */
 export const MODE_ORDER: ScanMode[] = ['hd', 'enhance', 'gray', 'bw', 'raw'];
 

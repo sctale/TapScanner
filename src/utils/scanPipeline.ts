@@ -4,12 +4,14 @@ import {
   documentDir,
   ensureDirectory,
   nativePath,
+  previewFile,
   rawFile,
   relocateIntoDocument,
   renderFile,
   thumbFile,
 } from './scanFiles';
 import { suggestMode, type ModeSuggestion } from './modeSelection';
+import type { ResolvedRenderOptions } from './renderOptions';
 import { FULL_FRAME_QUAD } from './quad';
 import { appendPage, createDocument } from '../database/scannerDB';
 import type { AnalyzeResult, ProcessResult, QuadPoint, ScanMode } from '../types';
@@ -39,15 +41,13 @@ export interface RenderedPage {
   uuid: string;
   rawPath: string;
   result: ProcessResult;
+  /** 渲染这一页用的是哪套参数 —— 批量换档与「重跑这一页」要能原样重放 */
+  options: ResolvedRenderOptions;
   mode: ScanMode;
   quad: QuadPoint[];
 }
 
-export interface RenderOptions {
-  autoCrop: boolean;
-  outputMaxSide: number;
-  jpegQuality?: number;
-}
+export type { ResolvedRenderOptions };
 
 /** 把相机/相册的临时文件搬进文档目录（单独一步，好让界面能分清「搬运挂」还是「感知挂」） */
 export async function importSource(
@@ -89,23 +89,32 @@ export async function renderCapture(
   docUuid: string,
   mode: ScanMode,
   quad: QuadPoint[] | null,
-  options: RenderOptions,
+  options: ResolvedRenderOptions,
 ): Promise<RenderedPage> {
   const out = renderFile(docUuid, capture.uuid);
   const thumb = thumbFile(docUuid, capture.uuid);
+  const preview = previewFile(docUuid, capture.uuid);
   const usedQuad = options.autoCrop ? (quad ?? capture.analyze.quad) : FULL_FRAME_QUAD;
 
   const result = await processPage({
     path: capture.rawPath,
     outPath: nativePath(out.uri),
     thumbPath: nativePath(thumb.uri),
+    previewPath: nativePath(preview.uri),
     quad: usedQuad,
     mode,
     outputMaxSide: options.outputMaxSide,
-    jpegQuality: options.jpegQuality ?? 92,
+    jpegQuality: options.jpegQuality,
   });
 
-  return { uuid: capture.uuid, rawPath: capture.rawPath, result, mode, quad: usedQuad };
+  return {
+    uuid: capture.uuid,
+    rawPath: capture.rawPath,
+    result,
+    mode,
+    quad: usedQuad,
+    options,
+  };
 }
 
 export interface SavedDocument {
@@ -127,21 +136,22 @@ export async function rerenderPage(input: {
   rawPath: string;
   mode: ScanMode;
   quad: QuadPoint[] | null;
-  autoCrop: boolean;
-  outputMaxSide: number;
-  jpegQuality?: number;
+  options: ResolvedRenderOptions;
 }): Promise<{ result: ProcessResult; quad: QuadPoint[] }> {
+  const { options } = input;
   const out = renderFile(input.docUuid, input.pageUuid);
   const thumb = thumbFile(input.docUuid, input.pageUuid);
-  const quad = input.autoCrop ? input.quad : FULL_FRAME_QUAD;
+  const preview = previewFile(input.docUuid, input.pageUuid);
+  const quad = options.autoCrop ? input.quad : FULL_FRAME_QUAD;
   const result = await processPage({
     path: input.rawPath,
     outPath: nativePath(out.uri),
     thumbPath: nativePath(thumb.uri),
+    previewPath: nativePath(preview.uri),
     quad,
     mode: input.mode,
-    outputMaxSide: input.outputMaxSide,
-    jpegQuality: input.jpegQuality ?? 92,
+    outputMaxSide: options.outputMaxSide,
+    jpegQuality: options.jpegQuality,
   });
   return { result, quad: result.usedQuad };
 }

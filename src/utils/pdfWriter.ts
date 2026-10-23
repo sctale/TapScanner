@@ -1,5 +1,6 @@
 import { File } from 'expo-file-system';
 import { assemblePdf, type PdfMeta, type PdfPageBytes } from './pdfBytes';
+import type { PdfPlacement } from './pageSize';
 import { withFileScheme } from './filePaths';
 
 /**
@@ -18,6 +19,8 @@ export interface PdfPageFile {
   widthPx: number;
   heightPx: number;
   dpi?: number;
+  /** 页面尺寸与摆放；省略 = 页面就是这张图（v0.1 直传行为） */
+  placement?: PdfPlacement;
 }
 
 /** 读文件 → 组 PDF 字节。任何一页缺文件都直接抛，不产出「少一页的 PDF」 */
@@ -32,6 +35,7 @@ export async function buildPdfFromFile(pages: PdfPageFile[], meta?: PdfMeta): Pr
       widthPx: page.widthPx,
       heightPx: page.heightPx,
       dpi: page.dpi,
+      placement: page.placement,
     });
   }
   return assemblePdf(entries, meta);

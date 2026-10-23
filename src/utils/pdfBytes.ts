@@ -1,4 +1,4 @@
-import { pdfPageSize } from './pageSize';
+import type { PdfPlacement } from './pageSize';
 
 /**
  * 手写的最小 PDF 字节层：把已经压好的 JPEG **原样**塞进 PDF（DCTDecode 直传）。
@@ -23,6 +23,11 @@ export interface PdfPageBytes {
   widthPx: number;
   heightPx: number;
   dpi?: number;
+  /**
+   * 页面与摆放矩形（由 pageSize.placeOnSheet 算好）。
+   * 省略时等于「页面就是这张图」—— v0.1 的直传行为，保证老调用点与既有单测不变。
+   */
+  placement?: PdfPlacement;
 }
 
 export interface PdfMeta {
@@ -54,6 +59,10 @@ const PDF_HEADER = new Uint8Array([
   0xd3,
   0x0a, // %<4 个高位字节>\n
 ]);
+
+function pxOf(px: number, dpi?: number): number {
+  return (px * 72) / (dpi && dpi > 0 ? dpi : 300);
+}
 
 function ascii(text: string): Uint8Array {
   return encoder.encode(text);
@@ -135,15 +144,21 @@ export function assemblePdf(pages: PdfPageBytes[], meta: PdfMeta = {}): Uint8Arr
   );
 
   pages.forEach((page, index) => {
-    const size = pdfPageSize(page.widthPx, page.heightPx, page.dpi);
+    const placed = page.placement ?? null;
+    const pageWidthPt = placed ? placed.pageWidthPt : Math.max(1, pxOf(page.widthPx, page.dpi));
+    const pageHeightPt = placed ? placed.pageHeightPt : Math.max(1, pxOf(page.heightPx, page.dpi));
+    const drawX = placed ? placed.x : 0;
+    const drawY = placed ? placed.y : 0;
+    const drawW = placed ? placed.width : pageWidthPt;
+    const drawH = placed ? placed.height : pageHeightPt;
     const ids = objectIdForPage(index);
     pushDict(
       ids.page,
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${size.widthPt} ${size.heightPt}] ` +
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt} ${pageHeightPt}] ` +
         `/Resources << /XObject << /Im${index} ${ids.image} 0 R >> /ProcSet [/PDF /ImageC] >> ` +
         `/Contents ${ids.contents} 0 R >>`,
     );
-    const content = `q ${size.widthPt} 0 0 ${size.heightPt} 0 0 cm /Im${index} Do Q`;
+    const content = `q ${drawW} 0 0 ${drawH} ${drawX} ${drawY} cm /Im${index} Do Q`;
     pushStream(ids.contents, `<< /Length ${content.length} >>`, ascii(content));
     pushStream(
       ids.image,

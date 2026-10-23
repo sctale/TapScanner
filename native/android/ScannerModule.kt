@@ -133,6 +133,7 @@ class ScannerModule(reactContext: ReactApplicationContext) :
     path: String,
     outPath: String,
     thumbPath: String,
+    previewPath: String,
     quad: ReadableArray?,
     mode: String,
     outputMaxSide: Double,
@@ -211,6 +212,9 @@ class ScannerModule(reactContext: ReactApplicationContext) :
           return@execute
         }
         DocPipeline.writeThumb(enhanced, thumbPath, THUMB_MAX_SIDE)
+        // 界面预览专用的小图：审核页与四角层原来直接解码 3000~4000px 成品/原图，
+        // 一张就是 ~45MB 位图，靠 largeHeap 撑着 —— 那是掩盖不是解决（走查 audit-43）。
+        if (previewPath.isNotBlank()) DocPipeline.writeThumb(enhanced, previewPath, PREVIEW_MAX_SIDE)
         val encodeMs = System.currentTimeMillis() - encodeStarted
 
         val afterPair = DocPipeline.toAnalysis(enhanced, ANALYSIS_MAX_SIDE)
@@ -221,6 +225,7 @@ class ScannerModule(reactContext: ReactApplicationContext) :
         val out = Arguments.createMap()
         out.putString("outPath", outPath.removePrefix("file://"))
         out.putString("thumbPath", thumbPath.removePrefix("file://"))
+        out.putString("previewPath", previewPath.removePrefix("file://"))
         out.putDouble("width", enhanced.cols().toDouble())
         out.putDouble("height", enhanced.rows().toDouble())
         out.putString("mode", opts.mode)
@@ -344,3 +349,5 @@ class ScannerModule(reactContext: ReactApplicationContext) :
 
 private const val ANALYSIS_MAX_SIDE = 1200
 private const val THUMB_MAX_SIDE = 480
+// 界面预览图（审核页/取景缩略图用它，别让 RN 解码 3000~4000px 成品）
+private const val PREVIEW_MAX_SIDE = 1200

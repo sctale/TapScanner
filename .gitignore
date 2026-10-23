@@ -39,3 +39,6 @@ tools/verify/lib/
 # vscode
 .vscode/
 .idea/
+
+# 设计链路产物（Product Design 套件的走查上下文与面板，过程件不入库）
+spark-output/
