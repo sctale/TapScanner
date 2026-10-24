@@ -637,6 +637,32 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
           <Text style={styles.navTitle} numberOfLines={1}>
             {pages.length > 0 ? `${safeIndex + 1} / ${pages.length} 页` : '没有页面'}
           </Text>
+          {/* 旋正放在顶栏（和扫描全能王同一个位置）：放「调整」面板里的话，
+              1080×1920 上展开面板也要滚动才看得见 —— 真机截图实测被底部按钮挡住（v0.2.3 E2E） */}
+          <View style={styles.navTools}>
+            <Pressable
+              style={styles.navTool}
+              onPress={() => rotateBy(-90)}
+              disabled={!current || current.status === 'working'}
+              hitSlop={TOUCH.slop}
+              accessibilityRole="button"
+              accessibilityLabel="向左旋转 90 度"
+              accessibilityHint="把这一页逆时针转过来"
+            >
+              <Text style={styles.navToolText}>↺</Text>
+            </Pressable>
+            <Pressable
+              style={styles.navTool}
+              onPress={() => rotateBy(90)}
+              disabled={!current || current.status === 'working'}
+              hitSlop={TOUCH.slop}
+              accessibilityRole="button"
+              accessibilityLabel="向右旋转 90 度"
+              accessibilityHint="把这一页顺时针转过去"
+            >
+              <Text style={styles.navToolText}>↻</Text>
+            </Pressable>
+          </View>
           <Pressable
             style={styles.navBtn}
             onPress={() => setShowAdjust((v) => !v)}
@@ -654,9 +680,13 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
           {current?.render ? (
             <Image
               source={{
-                uri: fileUri(
+                // 重渲染（换档 / 调四角 / 旋正）写的是同一个文件名，URI 没变 → Fresco 直接给
+                // 内存里那张旧图，界面上就是「点了没反应」（真机 E2E：成品文件已经转了 90°，
+                // 屏幕上纹丝不动）。`cache:'reload'` 对 file:// 不管用，所以把渲染输入拼进 URI
+                // 当版本号：路径部分不变（Fresco 仍按 getPath 读同一个文件），缓存键变了。
+                uri: `${fileUri(
                   displayPathFor(current.render.result.outPath, current.render.result.previewPath),
-                ),
+                )}?v=${current.mode}-${current.rotation}-${current.render.result.width}x${current.render.result.height}`,
               }}
               style={styles.previewImage}
               resizeMode="contain"
@@ -700,6 +730,13 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
         >
           <View style={styles.reviewInner}>
             {currentLabel ? <Text style={styles.note}>{currentLabel}</Text> : null}
+            {current?.render?.result.curved ? (
+              <Text style={styles.note}>
+                {`纸边本来是弯的，已拉直成矩形（弓高 ${Math.round(
+                  (current.render.result.curvature ?? 0) * 1000,
+                )}‰）`}
+              </Text>
+            ) : null}
             {gain ? <Text style={styles.gain}>{gain}</Text> : null}
             {current?.capture && current.capture.suggestion.rule !== 'default' ? (
               <Text style={styles.modeHint}>按画面建议：{current.capture.suggestion.reason}</Text>
@@ -728,30 +765,6 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
                 >
                   <Text style={styles.outlineButtonText}>重新找纸边（更仔细）</Text>
                 </Pressable>
-
-                {/* 旋正：纸拍横了 / 倒了，转一下就行，不必重拍（对标扫描全能王的 ↺ ↻） */}
-                <View style={styles.adjustRow}>
-                  <Pressable
-                    style={[styles.outlineButton, styles.outlineGrow]}
-                    disabled={!current || current.status === 'working'}
-                    onPress={() => rotateBy(-90)}
-                    accessibilityRole="button"
-                    accessibilityLabel="向左旋转 90 度"
-                    accessibilityHint="把这一页逆时针转过来"
-                  >
-                    <Text style={styles.outlineButtonText}>↺ 左转</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.outlineButton, styles.outlineGrow]}
-                    disabled={!current || current.status === 'working'}
-                    onPress={() => rotateBy(90)}
-                    accessibilityRole="button"
-                    accessibilityLabel="向右旋转 90 度"
-                    accessibilityHint="把这一页顺时针转过去"
-                  >
-                    <Text style={styles.outlineButtonText}>右转 ↻</Text>
-                  </Pressable>
-                </View>
 
                 <View style={styles.adjustRow}>
                   <Pressable
@@ -1149,6 +1162,15 @@ const styles = StyleSheet.create({
     gap: SPACING.sm,
   },
   navBtn: { minWidth: TOUCH.min, minHeight: TOUCH.min, alignItems: 'center', justifyContent: 'center' },
+  navTools: { flexDirection: 'row', alignItems: 'center' },
+  navTool: {
+    minWidth: TOUCH.min,
+    minHeight: TOUCH.min,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 2,
+  },
+  navToolText: { color: COLORS.textSecondary, fontSize: FONT_SIZE.lg, fontWeight: '600' },
   navMuted: { color: COLORS.textSecondary, fontSize: FONT_SIZE.md, fontWeight: '600' },
   navActive: { color: COLORS.accentDark },
   navTitle: {

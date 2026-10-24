@@ -36,11 +36,11 @@ APK_WIN="$(cygpath -w "$APK")"
 [ "${PIPESTATUS[0]}" = "0" ] || { echo "[e2e] 装包失败，后面点了也是旧包"; exit 1; }
 "$ADB" shell pm grant $PKG android.permission.CAMERA
 "$ADB" shell pm grant $PKG android.permission.READ_MEDIA_IMAGES
-# 样张必须在媒体库里（相册导入走的是系统 PhotoPicker）
-if [ -z "$("$ADB" shell content query --uri content://media/external/images/media --projection _data 2>/dev/null | grep -c tap-sample)" ]; then
-  "$ADB" push "$(cygpath -w "$ROOT/samples/20261024_093429.jpg")" /sdcard/DCIM/Camera/tap-sample.jpg >/dev/null 2>&1
-  "$ADB" shell "content call --uri content://media/external/file --method scan_file --arg /sdcard/DCIM/Camera/tap-sample.jpg" >/dev/null 2>&1
-fi
+# 样张必须在媒体库里（相册导入走的是系统 PhotoPicker）。每次无条件重推：
+# 模拟器重启后 MediaStore 有时会丢索引，条件判断反而让脚本静默点空
+"$ADB" push "$(cygpath -w "$ROOT/samples/20261024_093429.jpg")" /sdcard/DCIM/Camera/tap-sample.jpg >/dev/null 2>&1
+"$ADB" shell "content call --uri content://media/external/file --method scan_file --arg /sdcard/DCIM/Camera/tap-sample.jpg" >/dev/null 2>&1
+sleep 2
 "$ADB" shell am force-stop $PKG
 "$ADB" shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 sleep 6
@@ -55,11 +55,12 @@ shot 10-review
 # 展开「调整」面板 → 先截一张证明左转/右转按钮真的在界面上，再点右转看成品
 tap "调整"; sleep 2
 shot 11-panel
-if ui | grep -q "右转 ↻"; then
-  tap "右转 ↻"; sleep 10
+# 旋正按钮在顶栏（v0.2.4 从「调整」面板里挪出来的：面板要滚动才看得见）
+if ui | grep -q "向右旋转 90 度"; then
+  tap "↻"; sleep 12
   shot 12-rotated
 else
-  echo "[e2e] 面板里找不到「右转 ↻」——旋正按钮没渲染出来"
+  echo "[e2e] 顶栏找不到「向右旋转 90 度」——旋正按钮没渲染出来"
 fi
 
 DOC="$("$ADB" shell "ls -d /data/user/0/$PKG/files/scans/*/ | head -1" | tr -d '\r')"

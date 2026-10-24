@@ -222,6 +222,25 @@ class ScannerModule(reactContext: ReactApplicationContext) :
           }
         }
 
+        // 弯曲纸面展开：纸不是方方正正的矩形时（翘边、压在书脊上、桌面顶出弧）
+        // 四条边在照片里是**曲线**，四角再怎么准也裁不出矩形 —— 单应只能救「斜放的矩形」。
+        // 只在四角是自动检出的时候做：用户手动拖过角，要的就是他画的那个框，不该再被改。
+        val dewarpStarted = System.currentTimeMillis()
+        var curvature = 0.0
+        var curved = false
+        if (autoDetected && warped != null) {
+          val surfaced = PageSurface.straighten(warped)
+          curvature = surfaced.curvature
+          curved = surfaced.applied
+          if (surfaced.applied) {
+            warped.release()
+            warped = surfaced.image
+          } else {
+            surfaced.image.release()
+          }
+        }
+        val dewarpMs = System.currentTimeMillis() - dewarpStarted
+
         val enhanceStarted = System.currentTimeMillis()
         enhanced = DocPipeline.enhance(warped!!, opts)
         warped?.release()
@@ -259,6 +278,10 @@ class ScannerModule(reactContext: ReactApplicationContext) :
         )
         out.putArray("usedQuad", pointsToArray(quadNorm))
         out.putBoolean("autoCropped", autoDetected && detectedFlag)
+        // 「纸边是弯的、我们把它掰直了」这件事要能让界面说出口，也要能在真机出问题时一眼看出是哪步
+        out.putBoolean("curved", curved)
+        out.putDouble("curvature", curvature)
+        out.putDouble("dewarpMs", dewarpMs.toDouble())
         out.putMap("stages", stagesMap(decodeMs, warpMs, enhanceMs, encodeMs, started))
         promise.resolve(out)
       } catch (e: PipelineError) {

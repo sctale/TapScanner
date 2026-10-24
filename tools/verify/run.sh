@@ -95,8 +95,10 @@ SOURCES=(
   "$ROOT/native/android/Metrics.kt"
   "$ROOT/native/android/ScanErrors.kt"
   "$ROOT/native/android/QuadDetect.kt"
+  "$ROOT/native/android/PageSurface.kt"
   "$ROOT/native/android/DocPipeline.kt"
   "$ROOT/tools/verify/QuadDetectVerify.kt"
+  "$ROOT/tools/verify/PageSurfaceVerify.kt"
   "$ROOT/tools/verify/PhotoCheck.kt"
 )
 CP_COMPILE=("$OPENCV_JAR")
@@ -151,6 +153,14 @@ java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "$CP_RUN" \
   com.tapscanner.verify.QuadDetectVerifyKt
 ASSERT_STATUS=$?
 set -e
+
+# 弯曲纸面展开：四角 IoU 量不到「边是弯的」，这条单独跑完整链路并量残余弯曲
+set +e
+java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "$CP_RUN" \
+  com.tapscanner.verify.PageSurfaceVerifyKt
+SURFACE_STATUS=$?
+set -e
+if [ "$SURFACE_STATUS" != "0" ] && [ "$ASSERT_STATUS" = "0" ]; then ASSERT_STATUS=$SURFACE_STATUS; fi
 
 # 真实照片复核（合成图过关不代表真照片过关）：qa-out/photos 里有图就跑
 PHOTOS_DIR="$ROOT/qa-out/photos"

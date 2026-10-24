@@ -79,6 +79,10 @@ export interface ProcessResult {
   usedQuad: QuadPoint[];
   /** true = 自动切边确实检到了纸边 */
   autoCropped: boolean;
+  /** true = 纸边本来是弯的，已经被展开成直边（对标「曲面校正」） */
+  curved: boolean;
+  /** 弯曲程度（最大弓高 ÷ 边长）。0.004 以下不会去动它 */
+  curvature: number;
 }
 
 export interface ProbeResult {

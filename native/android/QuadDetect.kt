@@ -97,6 +97,9 @@ object QuadDetect {
    */
   private const val TEXT_EXPAND = 0.04
 
+  /** 单条边为「包住翘起来的纸边」最多外扩的比例（边长的 6%，再大就是别的东西在抢） */
+  private const val MAX_ENCLOSE_RATIO = 0.06
+
   /** 路的来源，用于诊断显示 */
   const val SRC_WHITE = "white"
   const val SRC_TEXT = "text"
@@ -601,20 +604,19 @@ object QuadDetect {
       val contourRatio = area / imgArea
       if (contourRatio > FULL_FRAME_RATIO) continue
       val quad = quadFrom(contour, w, h) ?: continue
-      // 文字腿多交一个「整体向外放一圈」的候选：纸边常落在阴影里，严格白纸掩膜会往里吃 1~2%，
-      // 用户看到的就是「第一列的序号被切掉一半」（真实样张 20261024_093429 实测）。
-      // 放出去这一圈只有**同样过闸门**才可能被选中 —— 贴边拍（纸已顶到画面边）会被
-      // spansFrame / FULL_FRAME_RATIO 拦下，自动退回原框，不会把桌面圈进来。
-      // 文字腿多交一个「整体向外放一圈」的候选：纸边常落在阴影里，严格白纸掩膜会往里吃 1~2%，
-      // 用户看到的就是「第一列的序号被切掉一半」（真实样张 20261024_093429 实测）。
+      // 纸边向外鼓（翘边、压在书脊上、桌面顶出弧）时，「四角拟合」会把鼓出去的部分留在框外 ——
+      // 那不是裁切，那是把纸的内容弄丢了。先按轮廓把每条边推到「刚好包住纸」（上限 6%），
+      // 再交给 PageSurface 把这条弯边掰直：两步合起来才是「弯的纸也能扫成矩形」。
       //
-      // 只在**纸没贴到画面边**时放（面积 < 0.75）：近拍铺满画面时四边本来就快撞上画面边界，
-      // 放出去只会把桌面圈进来（验证台「浅色桌 + 近拍」实测 IoU 0.87 → 0.85），
-      // 而这种情况即便切准了也没有内容被裁掉。
-      val expandable = source == SRC_TEXT && quadArea(quad) / imgArea < 0.75
+      // 之后还多交一个「整体向外放一圈」的候选：纸边常落在阴影里，严格白纸掩膜会往里吃 1~2%，
+      // 用户看到的就是「第一列的序号被切掉一半」（真实样张 20261024_093429 实测）。
+      // 放出去这一圈只有**同样过闸门**才可能被选中；纸已快贴满画面时不放
+      // （验证台「浅色桌 + 近拍」实测：那种构图放边只会把桌面圈进来，IoU 0.87 → 0.85）。
+      val enclosing = encloseContour(quad, contour, w, h)
+      val expandable = source == SRC_TEXT && quadArea(enclosing) / imgArea < 0.75
       val variants =
-        if (expandable) listOf(quad, clampToFrame(scaleFromCenter(quad, 1.0 + TEXT_EXPAND), w, h))
-        else listOf(quad)
+        if (expandable) listOf(enclosing, clampToFrame(scaleFromCenter(enclosing, 1.0 + TEXT_EXPAND), w, h))
+        else listOf(enclosing)
       for (q in variants) {
         // 闸门看的是**四边形自身**的面积，不是轮廓的面积：
         // 真实照片复核里「暗区」把深色桌面连成 0.99 的一块，轮廓占比刚好卡在阈值下，
@@ -653,6 +655,85 @@ object QuadDetect {
   /** 把四边形按像素夹回画面内（向外放边时纸已经贴到画面边就会撞上这一条） */
   private fun clampToFrame(quad: List<Point>, w: Double, h: Double): List<Point> =
     quad.map { Point(it.x.coerceIn(0.0, w), it.y.coerceIn(0.0, h)) }
+
+  /**
+   * 把四边形的每条边向外推到「刚好包住轮廓」，单条边最多让出边长的 [MAX_ENCLOSE_RATIO]。
+   *
+   * 为什么需要：四角拟合（minAreaRect / approxPolyDP）天生假设纸是**直边**四边形。
+   * 纸翘起来时，鼓出的那条边会被拟合到「角点连线」上，鼓出去的部分整个留在框外 ——
+   * 用户看到的不是「没裁准」，是「我纸上的字被你裁掉了」。
+   * 让每条边单独外扩到包住轮廓，才谈得上后面把它掰直。
+   *
+   * 上限是这条改动的安全带：轮廓被噪声撕开、或者旁边有另一张纸连过来时，
+   * 无上限的外扩会把半个桌面圈进扫描件。
+   */
+  private fun encloseContour(quad: List<Point>, contour: MatOfPoint, w: Double, h: Double): List<Point> {
+    if (quad.size != 4) return quad
+    val pts = contour.toArray()
+    if (pts.size < 8) return quad
+    // 纸已经占到画面 3/4 以上：这是「近拍铺满」的构图，外扩的余地本来就没有，
+    // 硬扩只会把浅色桌面/阴影那一侧圈进来（实测「浅色桌 + 近拍 + 侧光」IoU 0.86 → 0.82）。
+    // 这种构图也不需要外扩 —— 弯边照样由 PageSurface 在矫正图里量出来掰直。
+    if (quadArea(quad) / (w * h) > 0.75) return quad
+    val cx = quad.sumOf { it.x } / 4.0
+    val cy = quad.sumOf { it.y } / 4.0
+    val shifted = ArrayList<Pair<Point, Point>>(4)
+    val moves = DoubleArray(4)
+    for (i in 0 until 4) {
+      val a = quad[i]
+      val b = quad[(i + 1) % 4]
+      val ex = b.x - a.x
+      val ey = b.y - a.y
+      val len = hypot(ex, ey)
+      if (len < 1e-6) return quad
+      var nx = ey / len
+      var ny = -ex / len
+      // 外法向 = 背离中心的那一侧
+      if (nx * ((a.x + b.x) / 2 - cx) + ny * ((a.y + b.y) / 2 - cy) < 0) {
+        nx = -nx; ny = -ny
+      }
+      val outward = ArrayList<Double>(64)
+      for (p in pts) {
+        // 只算「挂在这条边名下」的点（投影落在边内）。不过滤的话，拟合出来的边只要
+        // 有一度两度的倾斜，对角的轮廓点就会被算成「在这条边外面几十像素」，
+        // 于是整条边被推出去老远 —— 实测弯边场景就是这么被放大的。
+        val along = (p.x - a.x) * (ex / len) + (p.y - a.y) * (ey / len)
+        if (along < -0.05 * len || along > 1.05 * len) continue
+        val d = (p.x - a.x) * nx + (p.y - a.y) * ny
+        if (d > 1.0) outward.add(d)
+      }
+      // 取 97 分位而不是最大值：轮廓上只要有一颗连到桌面的毛刺，最大值就会把整条边
+      // 推到毛刺那里去（实测「浅色桌 + 近拍」IoU 0.86 → 0.82）。弓形是铺开的，
+      // 分位数照样拿得到；毛刺是孤立的，会被丢掉。
+      outward.sort()
+      val pick = if (outward.isEmpty()) 0.0 else outward[(outward.size * 0.97).toInt().coerceAtMost(outward.size - 1)]
+      val move = min(pick, MAX_ENCLOSE_RATIO * len)
+      moves[i] = move
+      shifted.add(Point(a.x + nx * move, a.y + ny * move) to Point(ex / len, ey / len))
+    }
+    if (moves.all { it < 1.5 }) return quad
+    // 角点 = 原角点 + 相邻两条边各自的外移量（矩形四边都外移 d → 角点沿对角走 d，正是想要的）。
+    // 不用「外移后的两边求交」：那在近平行的边上会让角点跳到很远，
+    // 实测「纸基本铺满画面」因此从 IoU 0.97 掉到 0.77。
+    val out = ArrayList<Point>(4)
+    for (i in 0 until 4) {
+      val (pa, _) = shifted[i]            // 从角点 i 出发的那条边
+      val (pb, _) = shifted[(i + 3) % 4]  // 到角点 i 结束的那条边
+      val corner = quad[i]
+      // shifted 里存的是「已外移的边起点」，减回原起点就是这条边的外移向量
+      val va = Point(pa.x - quad[i].x, pa.y - quad[i].y)
+      val vb = Point(pb.x - quad[(i + 3) % 4].x, pb.y - quad[(i + 3) % 4].y)
+      out.add(Point(corner.x + va.x + vb.x, corner.y + va.y + vb.y))
+    }
+    return clampToFrame(out, w, h)
+  }
+
+  private fun intersectLines(p: Point, d: Point, q: Point, e: Point): Point? {
+    val denom = d.x * e.y - d.y * e.x
+    if (abs(denom) < 1e-9) return null
+    val t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / denom
+    return Point(p.x + d.x * t, p.y + d.y * t)
+  }
 
   /**
    * 内外极性 + 可测量性。

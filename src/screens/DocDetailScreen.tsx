@@ -490,7 +490,11 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
               <View style={styles.rowThumb}>
                 {item.thumbPath ? (
                   <Image
-                    source={{ uri: fileUri(item.thumbPath) }}
+                    source={{
+                      // 同一页重渲染写的是同一个文件名，URI 不变 → Fresco 给旧图。
+                      // updatedAt 每次 updatePageRender 都会变，正好当版本号用。
+                      uri: `${fileUri(item.thumbPath)}?v=${item.updatedAt}-${item.rotation}`,
+                    }}
                     style={styles.rowImage}
                     resizeMode="cover"
                     accessibilityIgnoresInvertColors
