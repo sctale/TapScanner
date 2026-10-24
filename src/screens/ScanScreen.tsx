@@ -26,7 +26,7 @@ import {
   findMode,
   genUuid,
 } from '../constants';
-import { isEngineReady, scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
+import { analyzeImage, isEngineReady, scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
 import {
   analyzeRaw,
   importSource,
@@ -251,6 +251,33 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
   );
 
   const retryPage = useCallback((page: SessionPage) => requeue(page.id, { error: undefined }), [requeue]);
+
+  /**
+   * 重新找纸边：换到更高的分析分辨率（1600）再跑一次检测。
+   *
+   * 自动检测是在当前这张图上「猜」，失败时只剩手动拖角一条路；换个分辨率重跑常常就成功了。
+   * 这是扫描类 App 的标准兜底，也是我拿不到你手机时唯一的自助诊断入口。
+   */
+  const redetect = useCallback(async () => {
+    if (!current?.capture) return;
+    try {
+      const again = await analyzeImage(current.capture.rawPath, 1600);
+      patch(current.id, {
+        capture: { ...current.capture, analyze: again },
+        quad: again.quad,
+        status: 'queued',
+        token: current.token + 1,
+      });
+      showToast(
+        again.detected
+          ? `找到纸边了（${again.source} · 占画面 ${Math.round(again.areaRatio * 100)}%）`
+          : '还是没找到纸边，手动拖四个角最快',
+        again.detected ? 'success' : 'info',
+      );
+    } catch (error) {
+      showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error');
+    }
+  }, [current, patch]);
 
   /** v5 的补光不走 Camera 的 prop，而是命令式设在 controller 上 */
   const toggleTorch = useCallback(() => {
@@ -658,6 +685,16 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
                 <Text style={styles.modeHint}>{findMode(currentMode).hint}</Text>
                 <Pressable style={styles.textButton} onPress={applyModeToAll} disabled={!current}>
                   <Text style={styles.textButtonText}>整份都用这一档（{pages.length} 页）</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.outlineButton, { marginTop: SPACING.xs }]}
+                  disabled={!current || current.status === 'working'}
+                  onPress={() => void redetect()}
+                  accessibilityRole="button"
+                  accessibilityHint="用更高分辨率再检测一次纸张边界"
+                >
+                  <Text style={styles.outlineButtonText}>重新找纸边（更仔细）</Text>
                 </Pressable>
 
                 <View style={styles.adjustRow}>

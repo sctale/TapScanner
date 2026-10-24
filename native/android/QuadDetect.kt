@@ -62,7 +62,7 @@ object QuadDetect {
   private const val MIN_AREA_RATIO = 0.12
 
   /** 超过这个占比说明纸基本铺满画面：切边没有收益，不如诚实地按整页处理 */
-  private const val FULL_FRAME_RATIO = 0.94
+  private const val FULL_FRAME_RATIO = 0.985
 
   /** 包围盒在两个方向上都顶到画面边的这个比例 → 区域是被画面切出来的，不是纸 */
   private const val SPANS_FRAME_RATIO = 0.97
@@ -138,7 +138,6 @@ object QuadDetect {
     val mag = Mat()
     val candidates = ArrayList<Candidate>()
     val magHist: LongArray
-    var fillsFrame = false
     // 门槛 = 全图中位梯度的若干倍（+1 防除零）：空气方块踩在平坦处，支撑≈中位数
     // 两条腿和两个回退共用同一个门槛，所以提到外面
     var gate = 0.0
@@ -148,33 +147,18 @@ object QuadDetect {
       gradientMagnitude(edgeBlur, mag)
       magHist = Histogram.of(mag)
       gate = MIN_EDGE_SUPPORT * (Histogram.percentile(magHist, 0.5) + 1)
-      fillsFrame = collectRegionCandidates(
-        regionBlur, mag, magHist, w, h, imgArea, gate, candidates
-      )
+      // 区域腿只负责产候选；「要不要裁」交给打分与闸门判断
+      collectRegionCandidates(regionBlur, mag, magHist, w, h, imgArea, gate, candidates)
       // 纸快铺满画面时不再让边缘腿去「收紧」：那条路上找到的是字里行间的方块，
       // 实测会把真实纸页切掉 20%（验证台「纸基本铺满画面」场景）。整页才是正解。
-      if (!fillsFrame) {
-        collectEdgeCandidates(edgeBlur, mag, magHist, w, h, imgArea, gate, light, candidates)
-      }
+      collectEdgeCandidates(edgeBlur, mag, magHist, w, h, imgArea, gate, light, candidates)
     } finally {
       regionBlur.release()
       edgeBlur.release()
       mag.release()
     }
 
-    if (fillsFrame) {
-      // 纸占满整个画面：正解是「不裁」，把整幅交回去，别让边缘腿找个字里行间的方块切掉真页
-      return Result(
-        points = fullFrameQuad(),
-        detected = true,
-        confidence = 0.55,
-        source = SRC_FULL,
-        areaRatio = 1.0,
-        elapsedMs = System.currentTimeMillis() - started
-      )
-    }
-
-    val best = candidates.maxByOrNull { it.score }
+    val best = pickBest(candidates)
     if (best != null) {
       val refined = if (light) best.quad else (refine(gray, best.quad, w, h) ?: best.quad)
       val ordered = orderCorners(refined)
@@ -214,6 +198,25 @@ object QuadDetect {
     )
   }
 
+  /**
+   * 两条腿之间选谁。
+   *
+   * 区域腿 = 闭合的亮/暗区域（纸本身），边缘腿 = 闭合的边缘环（兜底）。
+   * 两者都过了支撑闸门、而边缘腿的分数略高时，仍应信区域腿 ——
+   * 因为边缘环在「纸有一边贴着画面边」时会退化成贴着画面边的矩形（四条边全是 90°、对边等长，
+   * 角度与平衡双满分），实测会把纸切掉 8%~12%。只有当区域腿没给出面积相当的结果时才用边缘腿。
+   */
+  private fun pickBest(candidates: List<Candidate>): Candidate? {
+    if (candidates.isEmpty()) return null
+    val overall = candidates.maxByOrNull { it.score } ?: return null
+    if (overall.source != SRC_EDGE) return overall
+    val region = candidates
+      .filter { it.source == SRC_BRIGHT || it.source == SRC_DARK }
+      .filter { quadArea(it.quad) >= quadArea(overall.quad) * 0.92 }
+      .maxByOrNull { it.score }
+    return region ?: overall
+  }
+
   // ---------- 路 A：区域分割（亮纸 + 暗纸两种极性） ----------
 
   /**
@@ -237,7 +240,7 @@ object QuadDetect {
     imgArea: Double,
     gate: Double,
     out: ArrayList<Candidate>
-  ): Boolean {
+  ) {
     val hist = Histogram.of(regionBlur)
     val scratch = Mat()
     val levels = intArrayOf(
@@ -247,20 +250,13 @@ object QuadDetect {
     scratch.release()
     for (level in levels) {
       if (level <= 1 || level >= 254) continue
-      if (collectOneRegionMask(
-          regionBlur, level, Imgproc.THRESH_BINARY, SRC_BRIGHT, mag, magHist, w, h, imgArea, gate, out
-        )
-      ) {
-        return true
-      }
-      if (collectOneRegionMask(
-          regionBlur, level, Imgproc.THRESH_BINARY_INV, SRC_DARK, mag, magHist, w, h, imgArea, gate, out
-        )
-      ) {
-        return true
-      }
+      collectOneRegionMask(
+        regionBlur, level, Imgproc.THRESH_BINARY, SRC_BRIGHT, mag, magHist, w, h, imgArea, gate, out
+      )
+      collectOneRegionMask(
+        regionBlur, level, Imgproc.THRESH_BINARY_INV, SRC_DARK, mag, magHist, w, h, imgArea, gate, out
+      )
     }
-    return false
   }
 
   private fun collectOneRegionMask(
@@ -275,7 +271,7 @@ object QuadDetect {
     imgArea: Double,
     gate: Double,
     out: ArrayList<Candidate>
-  ): Boolean {
+  ) {
     val mask = Mat()
     val contours = ArrayList<MatOfPoint>()
     val hierarchy = Mat()
@@ -283,19 +279,11 @@ object QuadDetect {
       Imgproc.threshold(regionBlur, mask, level.toDouble(), 255.0, flag)
       val ratio = Core.countNonZero(mask).toDouble() / imgArea
       // 掩膜几乎铺满（纸真的铺满，或阈值没切开）或几乎没有 → 这份不可信
-      if (ratio < 0.06 || ratio > 0.985) return false
+      if (ratio < 0.06 || ratio > 0.985) return
       cleanMask(mask)
       fillHoles(mask)
       Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
       addQuadCandidates(contours, w, h, imgArea, source, mag, magHist, gate, out)
-      // 「整幅就是一张纸」：最大那块区域几乎占满画面，**而且它的边界是真边界**
-      // （无纸的纯色桌面同样能占满画面，靠支撑这一眼就能分开）
-      val biggest = contours.maxByOrNull { Imgproc.contourArea(it) }
-      if (biggest != null && Imgproc.contourArea(biggest) / imgArea >= FULL_FRAME_RATIO) {
-        val q = quadFrom(biggest, w, h)
-        if (q != null && edgeSupport(mag, q, w.toInt(), h.toInt()) >= gate) return true
-      }
-      return false
     } finally {
       mask.release()
       hierarchy.release()
@@ -455,13 +443,17 @@ object QuadDetect {
       .take(4)
     for ((contour, area) in ranked) {
       val ratio = area / imgArea
-      // 纸基本铺满画面时不再「假装裁切」：这种场景整页才是正确答案
+      // 只有「几乎就是整幅画面」才算真的没得裁（0.985 以上）
       if (ratio > FULL_FRAME_RATIO) continue
       val quad = quadFrom(contour, w, h) ?: continue
-      // 四边都顶到画面边的方块是「被画面切断的区域」，不是纸的轮廓：裁它只会吃掉纸
-      if (spansFrame(quad, w, h)) continue
+      // 边缘腿的候选如果四边都顶到画面边，那是「被画面切断的区域」而不是纸
+      // （区域腿不能套这条：近拍 A4 的纸本身就贴着画面边，那正是要裁的地方）
+      if (source == SRC_EDGE && spansFrame(quad, w, h)) continue
       // 最后一道：这个方块的边上到底有没有真实边界
-      if (edgeSupport(mag, quad, w.toInt(), h.toInt()) < gate) continue
+      // 支撑只做闸门、不参与排名：它分不清「纸边」和「密集文字边」（文字边的支撑更高），
+      // 拿它排名会把一簇字当成纸（实测低对比场景直接掉到 IoU 0.62）。
+      val support = edgeSupport(mag, quad, w.toInt(), h.toInt())
+      if (support < gate) continue
       out.add(Candidate(quad, scoreQuad(quad, ratio, w, h), source))
     }
   }
@@ -568,11 +560,26 @@ object QuadDetect {
    * 打分：面积占比落在 0.2~0.85 最好（太小是误检，太接近 1 说明等于没裁），
    * 角度越接近直角越好，对边越等长越好（纸是矩形）。
    */
-  private fun scoreQuad(quad: List<Point>, areaRatio: Double, w: Double, h: Double): Double {
+  /**
+   * 候选打分。
+   *
+   * `support` 这一项是这次近拍 A4 事故的直接解药：边缘腿经常产出一个「四边贴着画面边、
+   * 四条边全是 90°」的漂亮矩形（因为它是被画面切出来的区域），角度与对边平衡都满分；
+   * 而它的支撑很低（贴着画面边的地方没有梯度）。真纸边的支撑通常是它的几倍。
+   * 不把支撑算进分数，就会在「纸大 + 有一边靠画面边」时输给这个假矩形 ——
+   * 表现为「只裁了一部分 / 右边少一条」。
+   */
+  internal fun scoreQuad(quad: List<Point>, areaRatio: Double, w: Double, h: Double): Double {
+    // 0.85 以上不再扣分：手机拍 A4 本来就该占画面 85%~97%，
+    // 旧公式从 0.85 就开始惩罚「太大」，结果主动选了更小的框 —— 等于替用户把纸切掉一圈。
+    // 你正在扫一张纸：它至少占画面 35% 才接近满分（20% 的小纸也够用，只是分低些）。
+    // 0.9~0.97 是「近拍 A4」的正确区间，不扣分；再往上才是「等于没裁」。
     val areaScore = when {
-      areaRatio < 0.2 -> areaRatio / 0.2 * 0.5
-      areaRatio <= 0.85 -> 1.0
-      else -> (1.0 - (areaRatio - 0.85) / 0.15 * 0.6).coerceIn(0.4, 1.0)
+      areaRatio >= 0.97 -> (1.0 - (areaRatio - 0.97) / 0.03 * 0.6).coerceIn(0.4, 1.0)
+      areaRatio >= 0.9 -> 1.0
+      areaRatio >= 0.35 -> 0.95 + (areaRatio - 0.35) / 0.55 * 0.05
+      areaRatio >= 0.12 -> 0.45 + (areaRatio - 0.12) / 0.23 * 0.5
+      else -> (areaRatio / 0.12) * 0.45
     }
     var deviation = 0.0
     for (i in quad.indices) {
@@ -591,8 +598,12 @@ object QuadDetect {
 
   /** 掩膜清理：开运算去噪点，闭运算接缝隙 */
   internal fun cleanMask(mask: Mat) {
+    // 闭运算核要跟「文字行距」同量级：分析图短边 900 时给到 ~23px。
+    // 原来固定 9px，满页文字的纸会被啃成梳齿（实测近拍 A4：真值 0.85，拟合只有 0.68）。
+    val short = min(mask.cols(), mask.rows())
+    val closeK = Metrics.oddAtLeast(short / 40, 9).toDouble()
     val open = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
-    val close = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(9.0, 9.0))
+    val close = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(closeK, closeK))
     try {
       Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, open)
       Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, close)

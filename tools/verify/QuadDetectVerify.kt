@@ -72,6 +72,18 @@ fun main() {
     Point(60.0, 70.0), Point(420.0, 95.0), Point(405.0, 355.0), Point(50.0, 330.0)
   )
   // 几乎铺满画面（切边本就不该有收益）
+  // 手机拍 A4 最常见的构图：纸几乎铺满画面，只在四周露一点桌面
+  val closeup = listOf(
+    Point(26.0, 32.0), Point(772.0, 22.0), Point(780.0, 566.0), Point(34.0, 574.0)
+  )
+  // 近拍 + 明显透视（俯拍时上边比下边短得多）
+  val closeupSkew = listOf(
+    Point(120.0, 40.0), Point(700.0, 26.0), Point(784.0, 574.0), Point(30.0, 560.0)
+  )
+  // 几乎贴着边拍：只有几像素的桌面
+  val nearFull = listOf(
+    Point(10.0, 12.0), Point(790.0, 8.0), Point(786.0, 590.0), Point(8.0, 586.0)
+  )
   val fullFrame = listOf(
     Point(6.0, 6.0), Point(W - 6.0, 6.0), Point(W - 6.0, H - 6.0), Point(6.0, H - 6.0)
   )
@@ -87,6 +99,10 @@ fun main() {
     Scenario("深色纸/浅桌（路A失效）", straight, 55.0, 190.0, minIou = 0.7),
     // 纸只占画面一角：面积门槛 0.12 之下的误检要拦住，之上的真纸要拿到
     Scenario("小纸（占画面约 20%）", small, 240.0, 85.0, minIou = 0.75),
+    // 这三条是「拍 A4」的真实构图：以前一个都没有，于是「纸一大就不裁」的坑没被发现
+    Scenario("A4 近拍（占画面约 85%）", closeup, 240.0, 72.0, minIou = 0.9),
+    Scenario("A4 近拍 + 强透视", closeupSkew, 240.0, 72.0, minIou = 0.9),
+    Scenario("A4 贴边拍（占画面约 96%）", nearFull, 240.0, 72.0, minIou = 0.9),
     Scenario("纸基本铺满画面", fullFrame, 240.0, 70.0, minIou = 0.8),
     Scenario("无纸：纯桌面纹理", straight, 70.0, 70.0, text = false, hasPaper = false)
   )
@@ -111,6 +127,8 @@ fun main() {
     }
     if (!ok) {
       failures += 1
+      println("  [${s.name}] 检出四角：${quad.map { "(${Math.round(it.x)},${Math.round(it.y)})" }.joinToString(" ")}")
+      println("  [${s.name}] 真值四角：${s.paper.map { "(${Math.round(it.x)},${Math.round(it.y)})" }.joinToString(" ")}")
       diagnose(s.name, gray)
     }
     println(
@@ -154,8 +172,9 @@ private fun diagnose(name: String, gray: Mat) {
     QuadDetect.gradientMagnitude(edgeBlur, mag)
     val hist = Histogram.of(mag)
     val medianGrad = Histogram.percentile(hist, 0.5)
+    val gate = QuadDetect.MIN_EDGE_SUPPORT * (medianGrad + 1)
     println("  [$name] 梯度 p50=$medianGrad p99=${Histogram.percentile(hist, 0.99)} " +
-      "p99.5=${Histogram.percentile(hist, 0.995)}（支撑门槛=${fmt(QuadDetect.MIN_EDGE_SUPPORT * (medianGrad + 1))}）")
+      "p99.5=${Histogram.percentile(hist, 0.995)}（支撑门槛=${fmt(gate)}）")
 
     val regionHist = Histogram.of(regionBlur)
     val scratch = Mat()
@@ -176,7 +195,7 @@ private fun diagnose(name: String, gray: Mat) {
         }
         QuadDetect.cleanMask(mask)
         QuadDetect.fillHoles(mask)
-        reportContours(tag, mask, mag, contours, hierarchy, w, h, imgArea, medianGrad, name)
+        reportContours(tag, mask, mag, contours, hierarchy, w, h, imgArea, medianGrad, gate, name)
       }
     }
 
@@ -189,7 +208,7 @@ private fun diagnose(name: String, gray: Mat) {
       val beforeClose = Core.countNonZero(edges).toDouble() / imgArea
       Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel, Point(-1.0, -1.0), 2)
       println("  [$name] 路B q=$q 阈值=${fmt(lower)}/${fmt(upper)} 闭核=$k 闭前边缘占比=${fmt(beforeClose)}")
-      reportContours("路B q$q", edges, mag, contours, hierarchy, w, h, imgArea, medianGrad, name)
+      reportContours("路B q$q", edges, mag, contours, hierarchy, w, h, imgArea, medianGrad, gate, name)
     }
     kernel.release()
   } finally {
@@ -214,6 +233,7 @@ private fun reportContours(
   h: Double,
   imgArea: Double,
   medianGrad: Int,
+  gate: Double,
   name: String
 ) {
   Imgproc.findContours(src, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
@@ -223,15 +243,25 @@ private fun reportContours(
     val ratio = Imgproc.contourArea(c) / imgArea
     val quad = QuadDetect.quadFrom(c, w, h)
     val support = if (quad != null) QuadDetect.edgeSupport(mag, quad, w.toInt(), h.toInt()) else -1.0
+    // 轮廓 → 凸包 → 拟合后的面积：三个数字一起看才知道损失发生在哪一步
+    val cF = MatOfPoint2f(*c.toArray())
+    val rect = org.opencv.imgproc.Imgproc.minAreaRect(cF)
+    val boxArea = rect.size.width * rect.size.height / imgArea
+    cF.release()
+    val quadArea = if (quad != null) QuadDetect.quadArea(quad) / imgArea else -1.0
     val verdict = when {
       ratio < 0.12 -> "太小(<0.12)"
       ratio > 0.94 -> "太大(>0.94 等于没裁)"
       quad == null -> "拟合不出四边形"
       QuadDetect.spansFrame(quad, w, h) -> "包围盒顶满画面(被画面切断)"
-      support < QuadDetect.MIN_EDGE_SUPPORT * (medianGrad + 1) -> "边界支撑不足"
+      support < gate -> "边界支撑不足"
       else -> "可用"
     }
-    println("  [$name] $tag 占比=${fmt(ratio)} 四边形=${quad != null} 支撑=${fmt(support)} -> $verdict")
+    val score = if (quad != null) QuadDetect.scoreQuad(quad, ratio, w, h) else -1.0
+    println(
+      "  [$name] $tag 轮廓占比=${fmt(ratio)} 外接框=${fmt(boxArea)} 拟合=${fmt(quadArea)} " +
+        "四边形=${quad != null} 支撑=${fmt(support)} 分=${fmt(score)} -> $verdict"
+    )
   }
   contours.forEach { it.release() }
   contours.clear()
@@ -254,19 +284,29 @@ private fun synthesize(s: Scenario): Mat {
     val pts = MatOfPoint(*s.paper.toTypedArray())
     Imgproc.fillConvexPoly(img, pts, Scalar(s.paperGray, s.paperGray, s.paperGray))
     if (s.text) {
-      // 纸上的深色文字行：制造 Otsu 掩膜里的洞
+      // 纸上的深色文字行：制造 Otsu 掩膜里的洞。
+      // ⚠️ 必须先画在掩膜里、再与纸张多边形求交：直接画矩形会溢出到纸张斜边之外，
+      // 那些笔画会让「纸的轮廓」出现缺口（掩膜洞与外界连通，fillHoles 补不回来）——
+      // 那是合成图的假象，不是真实照片里会发生的事。
       val xs = s.paper.map { it.x }
       val ys = s.paper.map { it.y }
       val left = xs.min() + 24
       val right = xs.max() - 24
+      val textMask = Mat.zeros(H, W, CvType.CV_8UC1)
+      val paperMask = Mat.zeros(H, W, CvType.CV_8UC1)
+      Imgproc.fillConvexPoly(paperMask, MatOfPoint(*s.paper.toTypedArray()), Scalar(255.0))
       var y = ys.min() + 40
       var line = 0
       while (y < ys.max() - 30) {
         val w = (right - left) * (if (line % 3 == 2) 0.55 else 0.92)
-        Imgproc.rectangle(img, Point(left, y), Point(left + w, y + 9.0), Scalar(45.0, 45.0, 45.0), -1)
+        Imgproc.rectangle(textMask, Point(left, y), Point(left + w, y + 9.0), Scalar(255.0), -1)
         y += 26.0
         line += 1
       }
+      Core.bitwise_and(textMask, paperMask, textMask)
+      img.setTo(Scalar(45.0, 45.0, 45.0), textMask)
+      textMask.release()
+      paperMask.release()
     }
     pts.release()
   }
