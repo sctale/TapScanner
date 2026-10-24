@@ -65,7 +65,7 @@ object QuadDetect {
   private const val FULL_FRAME_RATIO = 0.985
 
   /** 包围盒在两个方向上都顶到画面边的这个比例 → 区域是被画面切出来的，不是纸 */
-  private const val SPANS_FRAME_RATIO = 0.97
+  private const val SPANS_FRAME_RATIO = 0.985
 
   /** 四角允许的角度区间（纸张透视后可以是相当斜的四边形） */
   private const val MIN_ANGLE_DEG = 45.0
@@ -92,6 +92,8 @@ object QuadDetect {
   internal const val MIN_EDGE_SUPPORT = 2.0
 
   /** 路的来源，用于诊断显示 */
+  const val SRC_WHITE = "white"
+  const val SRC_TEXT = "text"
   const val SRC_BRIGHT = "bright"
   const val SRC_DARK = "dark"
   const val SRC_EDGE = "edge"
@@ -132,7 +134,7 @@ object QuadDetect {
     }
     val imgArea = w * h
 
-    // 两张模糊 + 一张梯度图各算一次，两条路和「边界支撑」这一关共用
+    // 两张模糊 + 梯度图 + 白纸通道图各算一次，各条腿和「边界支撑」共用
     val regionBlur = Mat()
     val edgeBlur = Mat()
     val mag = Mat()
@@ -146,11 +148,16 @@ object QuadDetect {
       Imgproc.GaussianBlur(gray, edgeBlur, Size(5.0, 5.0), 1.5)
       gradientMagnitude(edgeBlur, mag)
       magHist = Histogram.of(mag)
+      // 白纸腿用的「三通道最小值」：木桌/布料是暖色的（B 通道低），白纸三通道都高。
+      // 灰阶会把两者混在一起 —— 用户样张（浅木桌 + A4）就是死在这上面。
+      
       gate = MIN_EDGE_SUPPORT * (Histogram.percentile(magHist, 0.5) + 1)
       // 区域腿只负责产候选；「要不要裁」交给打分与闸门判断
       collectRegionCandidates(regionBlur, mag, magHist, w, h, imgArea, gate, candidates)
-      // 纸快铺满画面时不再让边缘腿去「收紧」：那条路上找到的是字里行间的方块，
-      // 实测会把真实纸页切掉 20%（验证台「纸基本铺满画面」场景）。整页才是正解。
+      collectWhiteCandidates(bgr, mag, magHist, w, h, imgArea, gate, candidates)
+      // 文本密度腿：纸是画面里唯一「布满笔画」的区域。桌面/键盘/线材都没有笔画，
+      // 这条判据比「哪块更白」稳得多 —— 用户样张里白键盘/白线/白桌全在抢亮度，但没有一个在写字。
+      collectTextCandidates(gray, bgr, mag, magHist, w, h, imgArea, gate, candidates)
       collectEdgeCandidates(edgeBlur, mag, magHist, w, h, imgArea, gate, light, candidates)
     } finally {
       regionBlur.release()
@@ -198,6 +205,35 @@ object QuadDetect {
     )
   }
 
+  /** 验证台用：把每条腿产出的候选（来源/面积/分数）摊开，定位「为什么选了这一块」 */
+  internal fun debugCandidates(bgr: Mat, gray: Mat): List<String> {
+    val w = bgr.cols().toDouble()
+    val h = bgr.rows().toDouble()
+    val imgArea = w * h
+    val regionBlur = Mat()
+    val edgeBlur = Mat()
+    val mag = Mat()
+    val white = Mat()
+    val out = ArrayList<Candidate>()
+    val rows = ArrayList<String>()
+    try {
+      Imgproc.GaussianBlur(gray, regionBlur, Size(0.0, 0.0), 5.0)
+      Imgproc.GaussianBlur(gray, edgeBlur, Size(5.0, 5.0), 1.5)
+      gradientMagnitude(edgeBlur, mag)
+      val magHist = Histogram.of(mag)
+      val gate = MIN_EDGE_SUPPORT * (Histogram.percentile(magHist, 0.5) + 1)
+      collectRegionCandidates(regionBlur, mag, magHist, w, h, imgArea, gate, out)
+      collectWhiteCandidates(bgr, mag, magHist, w, h, imgArea, gate, out)
+      collectEdgeCandidates(edgeBlur, mag, magHist, w, h, imgArea, gate, false, out)
+      for (c in out.sortedByDescending { it.score }) {
+        rows.add("%s area=%.2f score=%.2f".format(c.source, quadArea(c.quad) / imgArea, c.score))
+      }
+    } finally {
+      regionBlur.release(); edgeBlur.release(); mag.release(); white.release()
+    }
+    return rows
+  }
+
   /**
    * 两条腿之间选谁。
    *
@@ -208,7 +244,13 @@ object QuadDetect {
    */
   private fun pickBest(candidates: List<Candidate>): Candidate? {
     if (candidates.isEmpty()) return null
+    // 文本密度是最强证据：有字的区域只可能是纸。它在闸门里活下来就用它。
+    candidates.filter { it.source == SRC_TEXT }.maxByOrNull { it.score }?.let { return it }
+    val white = candidates.filter { it.source == SRC_WHITE }.maxByOrNull { it.score }
     val overall = candidates.maxByOrNull { it.score } ?: return null
+    // 白纸腿是「低饱和 + 高亮 + 大块四边形」，在真实桌面场景里比灰阶/边缘更可靠；
+    // 它给出的候选一旦通过全部闸门，就优先采用（实测样张里灰阶只圈到纸的 0.37，白纸腿才是整张）。
+    if (white != null) return white
     if (overall.source != SRC_EDGE) return overall
     val region = candidates
       .filter { it.source == SRC_BRIGHT || it.source == SRC_DARK }
@@ -283,7 +325,7 @@ object QuadDetect {
       cleanMask(mask)
       fillHoles(mask)
       Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-      addQuadCandidates(contours, w, h, imgArea, source, mag, magHist, gate, out)
+      addQuadCandidates(contours, w, h, imgArea, source, mag, magHist, gate, regionBlur, out)
     } finally {
       mask.release()
       hierarchy.release()
@@ -337,6 +379,113 @@ object QuadDetect {
     return bestLevel.coerceIn(1, 254)
   }
 
+  // ---------- 路 A2：白纸腿（三通道最小值） ----------
+
+
+  /**
+   * 白纸腿：只按「够不够白」分割，不按灰阶亮暗。
+   *
+   * 灰阶 Otsu 在「浅木桌 + 白纸」上分不开（两者 Y 只差一点，桌面纹理把直方图糊平），
+   * 但在 B 通道上差得很明显 —— 用户样张（浅木桌 + A4，扫描全能王能裁我们裁不到）就是死在这。
+   * 阈值同样用 Otsu，其余流程与其他腿共用。
+   */
+  private fun collectWhiteCandidates(
+    bgr: Mat,
+    mag: Mat,
+    magHist: LongArray,
+    w: Double,
+    h: Double,
+    imgArea: Double,
+    gate: Double,
+    out: ArrayList<Candidate>
+  ) {
+    val hsv = Mat()
+    val mask = Mat()
+    val contours = ArrayList<MatOfPoint>()
+    val hierarchy = Mat()
+    try {
+      Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
+      // 纸 = 几乎无彩色（S 低）+ 够亮（V 高）。木桌/桌面是暖色（S 偏高），
+      // 白键盘/白线虽然也进来，但它们不是大块四边形，会被形状与面积筛掉。
+      Core.inRange(hsv, Scalar(0.0, 0.0, 165.0), Scalar(180.0, 80.0, 255.0), mask)
+      val ratio = Core.countNonZero(mask).toDouble() / imgArea
+      if (ratio < 0.06 || ratio > 0.985) return
+      cleanMask(mask)
+      fillHoles(mask)
+      Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+      addQuadCandidates(contours, w, h, imgArea, SRC_WHITE, mag, magHist, gate, null, out)
+    } finally {
+      hsv.release()
+      mask.release()
+      hierarchy.release()
+      contours.forEach { it.release() }
+    }
+  }
+
+  // ---------- 路 A3：文本密度腿 ----------
+
+  /**
+   * 笔画密度 → 纸的范围。
+   *
+   * blackhat 只保留「比周围暗的细结构」（文字/表格线），再横向膨胀把同一行连起来、
+   * 大核闭运算把行连成块。整张纸因此变成一整片高密度区域，而桌面/键盘是一片空白。
+   *
+   * 之后不直接把这块当纸（文字不会写到纸边），而是交给同一套四边形拟合，
+   * 由白纸掩膜与边界支撑负责把边贴到真实的纸边上。
+   */
+  private fun collectTextCandidates(
+    gray: Mat,
+    bgr: Mat,
+    mag: Mat,
+    magHist: LongArray,
+    w: Double,
+    h: Double,
+    imgArea: Double,
+    gate: Double,
+    out: ArrayList<Candidate>
+  ) {
+    val bh = Mat()
+    val mask = Mat()
+    val contours = ArrayList<MatOfPoint>()
+    val hierarchy = Mat()
+    var k1: Mat? = null
+    var k2: Mat? = null
+    try {
+      val short = min(gray.cols(), gray.rows())
+      val k = Metrics.oddAtLeast(short / 60, 9)
+      k1 = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(k.toDouble(), k.toDouble()))
+      Imgproc.morphologyEx(gray, bh, Imgproc.MORPH_BLACKHAT, k1!!)
+      Imgproc.threshold(bh, mask, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+      // 同一行的字连起来（横向 5 个核宽），避免每行字各自成块
+      k2 = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size((k * 5).toDouble(), 3.0))
+      Imgproc.dilate(mask, mask, k2!!)
+      val strokeRatio = Core.countNonZero(mask).toDouble() / imgArea
+      if (strokeRatio < 0.02 || strokeRatio > 0.6) return
+      // 文字不会写到纸边：把文字块向外扩一圈，再与「白纸掩膜」求交 ——
+      // 文字负责「纸在哪」，白纸负责「纸边到哪」。两者缺一个都会切掉或少裁。
+      val grow = Metrics.oddAtLeast(short / 5, 15).toDouble()
+      val growK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(grow, grow))
+      Imgproc.dilate(mask, mask, growK)
+      growK.release()
+      val hsv = Mat()
+      val white = Mat()
+      Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
+      Core.inRange(hsv, Scalar(0.0, 0.0, 150.0), Scalar(180.0, 95.0, 255.0), white)
+      Core.bitwise_and(mask, white, mask)
+      hsv.release(); white.release()
+      val afterRatio = Core.countNonZero(mask).toDouble() / imgArea
+      if (afterRatio < 0.03) return
+      cleanMask(mask)
+      fillHoles(mask)
+      Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+      addQuadCandidates(contours, w, h, imgArea, SRC_TEXT, mag, magHist, gate, null, out)
+    } finally {
+      bh.release(); mask.release(); hierarchy.release()
+      k1?.release(); k2?.release()
+      contours.forEach { it.release() }
+    }
+  }
+
   // ---------- 路 B：梯度边缘 + 闭运算 ----------
 
   /**
@@ -385,7 +534,7 @@ object QuadDetect {
         contours.clear()
         Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
         if (contours.isEmpty()) continue
-        addQuadCandidates(contours, w, h, imgArea, SRC_EDGE, mag, magHist, gate, out)
+        addQuadCandidates(contours, w, h, imgArea, SRC_EDGE, mag, magHist, gate, null, out)
       }
     } finally {
       edges.release()
@@ -434,6 +583,7 @@ object QuadDetect {
     mag: Mat,
     magHist: LongArray,
     gate: Double,
+    gray: Mat?,
     out: ArrayList<Candidate>
   ) {
     val ranked = contours
@@ -442,20 +592,95 @@ object QuadDetect {
       .sortedByDescending { it.second }
       .take(4)
     for ((contour, area) in ranked) {
-      val ratio = area / imgArea
-      // 只有「几乎就是整幅画面」才算真的没得裁（0.985 以上）
-      if (ratio > FULL_FRAME_RATIO) continue
+      val contourRatio = area / imgArea
+      if (contourRatio > FULL_FRAME_RATIO) continue
       val quad = quadFrom(contour, w, h) ?: continue
-      // 边缘腿的候选如果四边都顶到画面边，那是「被画面切断的区域」而不是纸
-      // （区域腿不能套这条：近拍 A4 的纸本身就贴着画面边，那正是要裁的地方）
-      if (source == SRC_EDGE && spansFrame(quad, w, h)) continue
-      // 最后一道：这个方块的边上到底有没有真实边界
+      // 闸门看的是**四边形自身**的面积，不是轮廓的面积：
+      // 真实照片复核里「暗区」把深色桌面连成 0.99 的一块，轮廓占比刚好卡在阈值下，
+      // 于是整幅画面被当成纸交了回去 —— 真机上就是「完全不裁」。
+      val ratio = quadArea(quad) / imgArea
+      if (ratio > FULL_FRAME_RATIO || ratio < MIN_AREA_RATIO * 0.8) continue
+      // 四边都顶到画面边 = 这个框就是画面本身，不是一张纸。
+      // 两条腿都要过这一关：实测用户样张里「暗区」把桌子/键盘/窗帘连成一片，
+      // 交回一个贴着四边的 0.97 框 —— 界面上就是「完全不裁」。
+      // 阈值取 0.985 而不是 0.97：近拍 A4 的纸边距画面边只有十来像素（bbox≈0.98），那正是要裁的。
+      if (spansFrame(quad, w, h)) continue
+      // 极性：亮区候选必须内部比四周亮，暗区相反；而且必须真的量得到「外面」
+      if (gray != null && (source == SRC_BRIGHT || source == SRC_DARK)) {
+        if (!polarityOk(gray, quad, source == SRC_BRIGHT)) continue
+      }
       // 支撑只做闸门、不参与排名：它分不清「纸边」和「密集文字边」（文字边的支撑更高），
       // 拿它排名会把一簇字当成纸（实测低对比场景直接掉到 IoU 0.62）。
       val support = edgeSupport(mag, quad, w.toInt(), h.toInt())
       if (support < gate) continue
       out.add(Candidate(quad, scoreQuad(quad, ratio, w, h), source))
     }
+  }
+
+  /**
+   * 内外极性 + 可测量性。
+   *
+   *  1. 亮区候选内部要明显比外圈亮（暗区候选相反）—— 木桌、阴影、反光都过不了；
+   *  2. **外圈必须占画面至少 1%**：整幅画面被当成纸时根本没有「外面」，这种候选直接否掉。
+   *     这条是真实照片复核（qa-out/photos）第一张图的死因。
+   */
+  private fun polarityOk(gray: Mat, quad: List<Point>, bright: Boolean): Boolean {
+    val w = gray.cols()
+    val h = gray.rows()
+    if (w <= 2 || h <= 2) return false
+    val inside = Mat.zeros(h, w, CvType.CV_8UC1)
+    val ring = Mat.zeros(h, w, CvType.CV_8UC1)
+    val pts = MatOfPoint(*quad.map { Point(it.x.toLong().toDouble(), it.y.toLong().toDouble()) }.toTypedArray())
+    val xs = quad.map { it.x }
+    val ys = quad.map { it.y }
+    val padX = max(6.0, (xs.max() - xs.min()) * 0.03)
+    val padY = max(6.0, (ys.max() - ys.min()) * 0.03)
+    val bbox = MatOfPoint(
+      Point(xs.min() - padX, ys.min() - padY),
+      Point(xs.max() + padX, ys.min() - padY),
+      Point(xs.max() + padX, ys.max() + padY),
+      Point(xs.min() - padX, ys.max() + padY)
+    )
+    try {
+      Imgproc.fillPoly(inside, listOf(pts), Scalar(255.0))
+      Imgproc.fillPoly(ring, listOf(bbox), Scalar(255.0))
+      Core.subtract(ring, inside, ring)
+      if (Core.countNonZero(ring) < w * h * 0.01) return false
+      val insideHist = maskedHistogram(gray, inside)
+      val ringHist = maskedHistogram(gray, ring)
+      if (insideHist.sum() == 0L || ringHist.sum() == 0L) return false
+      // 用分位数而不是均值：满页文字的纸，内部均值会被字迹拉到比浅色桌面还低，
+      // 均值判据会把一张真正在裁的白纸否掉（低对比场景实测过）。
+      val margin = 3
+      return if (bright) {
+        // 纸的白场（内部 p80）要比背景的中位亮度更亮
+        Histogram.percentile(insideHist, 0.80) >= Histogram.percentile(ringHist, 0.50) + margin
+      } else {
+        // 深色纸的暗部（内部 p20）要比背景的亮部（外圈 p80）更暗
+        Histogram.percentile(insideHist, 0.20) + margin <= Histogram.percentile(ringHist, 0.80)
+      }
+    } finally {
+      inside.release()
+      ring.release()
+      pts.release()
+      bbox.release()
+    }
+  }
+
+  /** 只在 mask 为 255 的位置统计灰度直方图（行读取，非连续 Mat 也不会错位） */
+  private fun maskedHistogram(gray: Mat, mask: Mat): LongArray {
+    val hist = LongArray(256)
+    val w = gray.cols()
+    val row = ByteArray(w)
+    val maskRow = ByteArray(w)
+    for (y in 0 until gray.rows()) {
+      gray.get(y, 0, row)
+      mask.get(y, 0, maskRow)
+      for (x in 0 until w) {
+        if (maskRow[x].toInt() != 0) hist[row[x].toInt() and 0xFF] += 1L
+      }
+    }
+    return hist
   }
 
   /** 包围盒几乎等于整幅画面 → 这块区域是被画面边界切出来的，不是纸边 */
@@ -570,17 +795,9 @@ object QuadDetect {
    * 表现为「只裁了一部分 / 右边少一条」。
    */
   internal fun scoreQuad(quad: List<Point>, areaRatio: Double, w: Double, h: Double): Double {
-    // 0.85 以上不再扣分：手机拍 A4 本来就该占画面 85%~97%，
-    // 旧公式从 0.85 就开始惩罚「太大」，结果主动选了更小的框 —— 等于替用户把纸切掉一圈。
-    // 你正在扫一张纸：它至少占画面 35% 才接近满分（20% 的小纸也够用，只是分低些）。
-    // 0.9~0.97 是「近拍 A4」的正确区间，不扣分；再往上才是「等于没裁」。
-    val areaScore = when {
-      areaRatio >= 0.97 -> (1.0 - (areaRatio - 0.97) / 0.03 * 0.6).coerceIn(0.4, 1.0)
-      areaRatio >= 0.9 -> 1.0
-      areaRatio >= 0.35 -> 0.95 + (areaRatio - 0.35) / 0.55 * 0.05
-      areaRatio >= 0.12 -> 0.45 + (areaRatio - 0.12) / 0.23 * 0.5
-      else -> (areaRatio / 0.12) * 0.45
-    }
+    // 你正在扫的就是画面里最大的那张纸 —— 所以「面积大」是主判据。
+    // 0.6 以后饱和（再大也不会更对），0.12~0.6 之间线性；角度只用来筛掉歪七扭八的块。
+    val sizeScore = (areaRatio / 0.9).coerceIn(0.0, 1.0)
     var deviation = 0.0
     for (i in quad.indices) {
       deviation += abs(angleDeg(quad[(i + 3) % 4], quad[i], quad[(i + 1) % 4]) - 90.0)
@@ -593,7 +810,7 @@ object QuadDetect {
     val right = distance(ordered[1], ordered[2])
     val balance = (1.0 - abs(top - bottom) / max(top, bottom)).coerceIn(0.0, 1.0) *
       (1.0 - abs(left - right) / max(left, right)).coerceIn(0.0, 1.0)
-    return areaScore * 0.45 + angleScore * 0.3 + balance * 0.25
+    return sizeScore * 0.8 + angleScore * 0.15 + balance * 0.05
   }
 
   /** 掩膜清理：开运算去噪点，闭运算接缝隙 */

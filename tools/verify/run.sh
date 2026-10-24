@@ -97,6 +97,7 @@ SOURCES=(
   "$ROOT/native/android/QuadDetect.kt"
   "$ROOT/native/android/DocPipeline.kt"
   "$ROOT/tools/verify/QuadDetectVerify.kt"
+  "$ROOT/tools/verify/PhotoCheck.kt"
 )
 CP_COMPILE=("$OPENCV_JAR")
 SDK="${ANDROID_HOME:-${LOCALAPPDATA:-}/Android/Sdk}"
@@ -144,5 +145,25 @@ CP_RUN="$(win "$OUT/classes")$SEP$(win "$OPENCV_JAR")$SEP$(win "$KOTLIN_STDLIB")
 
 # Windows 控制台默认不是 UTF-8，不显式指定编码时中文输出会变乱码
 # -D 参数交给 Windows 侧也要整体加引号，否则 MSYS 会把 "-Dfile.encoding=..." 里的 / 改写掉
+# 断言失败不要立刻退：真实照片复核是给人看的诊断，先跑完再一起报
+set +e
 java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "$CP_RUN" \
   com.tapscanner.verify.QuadDetectVerifyKt
+ASSERT_STATUS=$?
+set -e
+
+# 真实照片复核（合成图过关不代表真照片过关）：qa-out/photos 里有图就跑
+PHOTOS_DIR="$ROOT/qa-out/photos"
+if [ -d "$PHOTOS_DIR" ]; then
+  shopt -s nullglob
+  PHOTO_FILES=("$PHOTOS_DIR"/*.jpg "$PHOTOS_DIR"/*.jpeg "$PHOTOS_DIR"/*.png)
+  shopt -u nullglob
+  if [ ${#PHOTO_FILES[@]} -gt 0 ]; then
+    echo
+    echo "== 真实照片复核 =="
+    java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "$CP_RUN" \
+      com.tapscanner.verify.PhotoCheckKt "$(win "$PHOTOS_DIR")"
+  fi
+fi
+
+exit $ASSERT_STATUS

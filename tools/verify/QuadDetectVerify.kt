@@ -103,6 +103,9 @@ fun main() {
     Scenario("A4 近拍（占画面约 85%）", closeup, 240.0, 72.0, minIou = 0.9),
     Scenario("A4 近拍 + 强透视", closeupSkew, 240.0, 72.0, minIou = 0.9),
     Scenario("A4 贴边拍（占画面约 96%）", nearFull, 240.0, 72.0, minIou = 0.9),
+    // 最难的一类：浅色桌面 + 近拍 + 满页文字 + 侧光。这三件事叠在一起时，
+    // 亮区掩膜、极性判据、面积打分每一环都可能失效。
+    Scenario("浅色桌 + 近拍 + 满页文字 + 侧光", closeup, 240.0, 208.0, gradient = true, minIou = 0.85),
     Scenario("纸基本铺满画面", fullFrame, 240.0, 70.0, minIou = 0.8),
     Scenario("无纸：纯桌面纹理", straight, 70.0, 70.0, text = false, hasPaper = false)
   )
