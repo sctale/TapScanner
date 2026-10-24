@@ -1,5 +1,5 @@
 import { genUuid } from '../constants';
-import { analyzeImage, processPage, ScannerUnavailable } from '../native/ScannerNative';
+import { analyzeImage, normalizeRotation, processPage, ScannerUnavailable } from '../native/ScannerNative';
 import {
   documentDir,
   ensureDirectory,
@@ -45,6 +45,8 @@ export interface RenderedPage {
   options: ResolvedRenderOptions;
   mode: ScanMode;
   quad: QuadPoint[];
+  /** 旋正角度（成品图相对原图的顺时针转角），跟着这一页一起落库 */
+  rotation: number;
 }
 
 export type { ResolvedRenderOptions };
@@ -90,6 +92,7 @@ export async function renderCapture(
   mode: ScanMode,
   quad: QuadPoint[] | null,
   options: ResolvedRenderOptions,
+  rotation = 0,
 ): Promise<RenderedPage> {
   const out = renderFile(docUuid, capture.uuid);
   const thumb = thumbFile(docUuid, capture.uuid);
@@ -105,6 +108,7 @@ export async function renderCapture(
     mode,
     outputMaxSide: options.outputMaxSide,
     jpegQuality: options.jpegQuality,
+    rotation,
   });
 
   return {
@@ -114,6 +118,7 @@ export async function renderCapture(
     mode,
     quad: usedQuad,
     options,
+    rotation: normalizeRotation(rotation),
   };
 }
 
@@ -137,12 +142,14 @@ export async function rerenderPage(input: {
   mode: ScanMode;
   quad: QuadPoint[] | null;
   options: ResolvedRenderOptions;
-}): Promise<{ result: ProcessResult; quad: QuadPoint[] }> {
+  rotation?: number;
+}): Promise<{ result: ProcessResult; quad: QuadPoint[]; rotation: number }> {
   const { options } = input;
   const out = renderFile(input.docUuid, input.pageUuid);
   const thumb = thumbFile(input.docUuid, input.pageUuid);
   const preview = previewFile(input.docUuid, input.pageUuid);
   const quad = options.autoCrop ? input.quad : FULL_FRAME_QUAD;
+  const rotation = normalizeRotation(input.rotation);
   const result = await processPage({
     path: input.rawPath,
     outPath: nativePath(out.uri),
@@ -152,8 +159,9 @@ export async function rerenderPage(input: {
     mode: input.mode,
     outputMaxSide: options.outputMaxSide,
     jpegQuality: options.jpegQuality,
+    rotation,
   });
-  return { result, quad: result.usedQuad };
+  return { result, quad: result.usedQuad, rotation };
 }
 
 /** 多页一起归档（一次拍完再存，符合「拍 → 看 → 存」的实际用法） */
@@ -174,6 +182,7 @@ export async function savePagesAsDocument(
       thumbPath: page.result.thumbPath,
       mode: page.mode,
       quad: page.quad,
+      rotation: page.rotation,
       metrics: page.result.metricsAfter,
       stages: page.result.stages,
       width: page.result.width,

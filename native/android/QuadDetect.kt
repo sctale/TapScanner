@@ -91,6 +91,12 @@ object QuadDetect {
    */
   internal const val MIN_EDGE_SUPPORT = 2.0
 
+  /**
+   * 文字腿向外放边的比例（相对「中心到角」的距离）。
+   * 0.04 ≈ 每边向外让出 2% 页宽 —— 刚好把「纸边在阴影里被严格掩膜吃掉」的那 1~2% 还回来。
+   */
+  private const val TEXT_EXPAND = 0.04
+
   /** 路的来源，用于诊断显示 */
   const val SRC_WHITE = "white"
   const val SRC_TEXT = "text"
@@ -595,27 +601,58 @@ object QuadDetect {
       val contourRatio = area / imgArea
       if (contourRatio > FULL_FRAME_RATIO) continue
       val quad = quadFrom(contour, w, h) ?: continue
-      // 闸门看的是**四边形自身**的面积，不是轮廓的面积：
-      // 真实照片复核里「暗区」把深色桌面连成 0.99 的一块，轮廓占比刚好卡在阈值下，
-      // 于是整幅画面被当成纸交了回去 —— 真机上就是「完全不裁」。
-      val ratio = quadArea(quad) / imgArea
-      if (ratio > FULL_FRAME_RATIO || ratio < MIN_AREA_RATIO * 0.8) continue
-      // 四边都顶到画面边 = 这个框就是画面本身，不是一张纸。
-      // 两条腿都要过这一关：实测用户样张里「暗区」把桌子/键盘/窗帘连成一片，
-      // 交回一个贴着四边的 0.97 框 —— 界面上就是「完全不裁」。
-      // 阈值取 0.985 而不是 0.97：近拍 A4 的纸边距画面边只有十来像素（bbox≈0.98），那正是要裁的。
-      if (spansFrame(quad, w, h)) continue
-      // 极性：亮区候选必须内部比四周亮，暗区相反；而且必须真的量得到「外面」
-      if (gray != null && (source == SRC_BRIGHT || source == SRC_DARK)) {
-        if (!polarityOk(gray, quad, source == SRC_BRIGHT)) continue
+      // 文字腿多交一个「整体向外放一圈」的候选：纸边常落在阴影里，严格白纸掩膜会往里吃 1~2%，
+      // 用户看到的就是「第一列的序号被切掉一半」（真实样张 20261024_093429 实测）。
+      // 放出去这一圈只有**同样过闸门**才可能被选中 —— 贴边拍（纸已顶到画面边）会被
+      // spansFrame / FULL_FRAME_RATIO 拦下，自动退回原框，不会把桌面圈进来。
+      // 文字腿多交一个「整体向外放一圈」的候选：纸边常落在阴影里，严格白纸掩膜会往里吃 1~2%，
+      // 用户看到的就是「第一列的序号被切掉一半」（真实样张 20261024_093429 实测）。
+      //
+      // 只在**纸没贴到画面边**时放（面积 < 0.75）：近拍铺满画面时四边本来就快撞上画面边界，
+      // 放出去只会把桌面圈进来（验证台「浅色桌 + 近拍」实测 IoU 0.87 → 0.85），
+      // 而这种情况即便切准了也没有内容被裁掉。
+      val expandable = source == SRC_TEXT && quadArea(quad) / imgArea < 0.75
+      val variants =
+        if (expandable) listOf(quad, clampToFrame(scaleFromCenter(quad, 1.0 + TEXT_EXPAND), w, h))
+        else listOf(quad)
+      for (q in variants) {
+        // 闸门看的是**四边形自身**的面积，不是轮廓的面积：
+        // 真实照片复核里「暗区」把深色桌面连成 0.99 的一块，轮廓占比刚好卡在阈值下，
+        // 于是整幅画面被当成纸交了回去 —— 真机上就是「完全不裁」。
+        val ratio = quadArea(q) / imgArea
+        if (ratio > FULL_FRAME_RATIO || ratio < MIN_AREA_RATIO * 0.8) continue
+        // 四边都顶到画面边 = 这个框就是画面本身，不是一张纸。
+        // 两条腿都要过这一关：实测用户样张里「暗区」把桌子/键盘/窗帘连成一片，
+        // 交回一个贴着四边的 0.97 框 —— 界面上就是「完全不裁」。
+        // 阈值取 0.985 而不是 0.97：近拍 A4 的纸边距画面边只有十来像素（bbox≈0.98），那正是要裁的。
+        if (spansFrame(q, w, h)) continue
+        // 极性：亮区候选必须内部比四周亮，暗区相反；而且必须真的量得到「外面」
+        if (gray != null && (source == SRC_BRIGHT || source == SRC_DARK)) {
+          if (!polarityOk(gray, q, source == SRC_BRIGHT)) continue
+        }
+        // 支撑只做闸门、不参与排名：它分不清「纸边」和「密集文字边」（文字边的支撑更高），
+        // 拿它排名会把一簇字当成纸（实测低对比场景直接掉到 IoU 0.62）。
+        val support = edgeSupport(mag, q, w.toInt(), h.toInt())
+        if (support < gate) continue
+        out.add(Candidate(q, scoreQuad(q, ratio, w, h), source))
       }
-      // 支撑只做闸门、不参与排名：它分不清「纸边」和「密集文字边」（文字边的支撑更高），
-      // 拿它排名会把一簇字当成纸（实测低对比场景直接掉到 IoU 0.62）。
-      val support = edgeSupport(mag, quad, w.toInt(), h.toInt())
-      if (support < gate) continue
-      out.add(Candidate(quad, scoreQuad(quad, ratio, w, h), source))
     }
   }
+
+  /**
+   * 以中心为基准把四边形放大/缩小（factor>1 即四边同时向外）。
+   * 只改大小不改形状，所以 A4 的比例、透视斜度都原样保留。
+   */
+  private fun scaleFromCenter(quad: List<Point>, factor: Double): List<Point> {
+    if (quad.size != 4) return quad
+    val cx = quad.sumOf { it.x } / quad.size
+    val cy = quad.sumOf { it.y } / quad.size
+    return quad.map { Point(cx + (it.x - cx) * factor, cy + (it.y - cy) * factor) }
+  }
+
+  /** 把四边形按像素夹回画面内（向外放边时纸已经贴到画面边就会撞上这一条） */
+  private fun clampToFrame(quad: List<Point>, w: Double, h: Double): List<Point> =
+    quad.map { Point(it.x.coerceIn(0.0, w), it.y.coerceIn(0.0, h)) }
 
   /**
    * 内外极性 + 可测量性。
@@ -894,6 +931,10 @@ object QuadDetect {
   /** 亚像素精化：把角点吸附到真实边缘上，矫正后文字才不会歪 */
   private fun refine(gray: Mat, quad: List<Point>, w: Double, h: Double): List<Point>? {
     if (gray.empty() || quad.size != 4) return null
+    // cornerSubPix 遇到「角点在图像外」会直接抛断言（实测向外放一圈的候选会顶到边界），
+    // 而它是在原生调用里抛的 —— 上层只会看到一个「分析失败」。这里先自己拦一道。
+    val inside = quad.all { it.x >= 1.0 && it.y >= 1.0 && it.x <= w - 2.0 && it.y <= h - 2.0 }
+    if (!inside) return null
     val corners = MatOfPoint2f(*quad.toTypedArray())
     return try {
       Imgproc.cornerSubPix(

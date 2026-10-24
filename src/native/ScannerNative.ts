@@ -25,6 +25,7 @@ export interface ScannerNativeModule {
     mode: ScanMode,
     outputMaxSide: number,
     jpegQuality: number,
+    rotation: number,
   ): Promise<import('../types').ProcessResult>;
   /** 图像层最小探针（诊断用） */
   probe(path: string, outPath: string, maxSide: number): Promise<ProbeResult>;
@@ -90,6 +91,8 @@ export interface ProcessArgs {
   mode: ScanMode;
   outputMaxSide?: number;
   jpegQuality?: number;
+  /** 旋正：裁好后整页顺时针转的角度（0/90/180/270）。四角仍按原图坐标系给 */
+  rotation?: number;
 }
 
 export function quadToFlat(quad: QuadPoint[]): number[] {
@@ -110,7 +113,14 @@ export function processPage(args: ProcessArgs) {
     args.mode,
     args.outputMaxSide ?? 3000,
     args.jpegQuality ?? 92,
+    normalizeRotation(args.rotation),
   );
+}
+
+/** 只允许 0/90/180/270 —— 别的值喂给原生会被静默忽略，界面上却显示成转过了 */
+export function normalizeRotation(rotation: number | undefined): number {
+  const deg = Math.trunc(rotation ?? 0);
+  return ((deg % 360) + 360) % 360;
 }
 
 export function probeImage(path: string, outPath: string, maxSide = 1200): Promise<ProbeResult> {

@@ -127,6 +127,9 @@ class ScannerModule(reactContext: ReactApplicationContext) :
    * @param quad 归一化四角（8 个数）；传 null 表示「按自动检测的结果来」
    *             —— 自动检测失败时仍会用回退框，并在返回里以 autoCropped=false 如实说明
    * @param mode hd / enhance / gray / bw / raw，见 DocPipeline.presetFor
+   * @param rotation 旋正角度（顺时针 0/90/180/270）。作用在「裁好的那一页」上，
+   *                 不是原始像素 —— 这样四角层看到的原图与框始终对得上，
+   *                 而成品/缩略图/预览/指标全都跟着转（它们都是从这一步之后的图算出来的）。
    */
   @ReactMethod
   fun process(
@@ -138,6 +141,7 @@ class ScannerModule(reactContext: ReactApplicationContext) :
     mode: String,
     outputMaxSide: Double,
     jpegQuality: Double,
+    rotation: Double,
     promise: Promise
   ) {
     executor.execute {
@@ -199,6 +203,24 @@ class ScannerModule(reactContext: ReactApplicationContext) :
         val warpStarted = System.currentTimeMillis()
         warped = DocPipeline.warp(full, quadPixels, opts.outputMaxSide)
         val warpMs = System.currentTimeMillis() - warpStarted
+
+        // 旋正：只转裁好的这一页（见上面 @param rotation 的取舍）
+        val deg = ((rotation.toInt() % 360) + 360) % 360
+        if (deg != 0 && warped != null) {
+          val code = when (deg) {
+            90 -> Core.ROTATE_90_CLOCKWISE
+            180 -> Core.ROTATE_180
+            270 -> Core.ROTATE_90_COUNTERCLOCKWISE
+            else -> -1
+          }
+          if (code >= 0) {
+            val turned = Mat()
+            // Java 绑定里 rotate 在 Core（C++ 那边才是 Imgproc::rotate）
+            Core.rotate(warped!!, turned, code)
+            warped.release()
+            warped = turned
+          }
+        }
 
         val enhanceStarted = System.currentTimeMillis()
         enhanced = DocPipeline.enhance(warped!!, opts)

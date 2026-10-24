@@ -29,7 +29,7 @@ import { exportDocumentPdf, safeFileName, shareFile, sharePageJpg } from '../uti
 import { rerenderPage } from '../utils/scanPipeline';
 import { loadSettings } from '../utils/appSettings';
 import { resolveRenderOptions } from '../utils/renderOptions';
-import { scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
+import { normalizeRotation, scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
 import Toast, { showToast } from '../components/Toast';
 import { useBackHandler } from '../hooks/useBackHandler';
 import Modal from '../components/Modal';
@@ -96,12 +96,14 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
           mode,
           quad: page.quad,
           options: resolveRenderOptions(settings),
+          rotation: page.rotation,
         });
         await updatePageRender(page.id, {
           mode,
           outPath: result.outPath,
           thumbPath: result.thumbPath,
           quad,
+          rotation: page.rotation,
           metrics: result.metricsAfter,
           stages: result.stages,
           width: result.width,
@@ -148,12 +150,14 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
             mode,
             quad: page.quad,
             options: resolveRenderOptions(settings),
+            rotation: page.rotation,
           });
           await updatePageRender(page.id, {
             mode,
             outPath: result.outPath,
             thumbPath: result.thumbPath,
             quad,
+            rotation: page.rotation,
             metrics: result.metricsAfter,
             stages: result.stages,
             width: result.width,
@@ -242,12 +246,14 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
           mode: page.mode,
           quad: page.quad,
           options: resolveRenderOptions(settings),
+          rotation: page.rotation,
         });
         await updatePageRender(page.id, {
           mode: page.mode,
           outPath: result.outPath,
           thumbPath: result.thumbPath,
           quad,
+          rotation: page.rotation,
           metrics: result.metricsAfter,
           stages: result.stages,
           width: result.width,
@@ -255,6 +261,47 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
         });
         await reload();
         showToast('这一页已按当前设置重跑', 'success');
+      } catch (error) {
+        showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [document, reload],
+  );
+
+  /**
+   * 旋正一页（存档后也能改）：转的是成品，原图与四角都不动，所以随时能转回去。
+   * delta 用 ±90；转完立刻重出图，界面上的那一页就是转好的样子。
+   */
+  const rotatePage = useCallback(
+    async (page: PageRecord, delta: number) => {
+      if (!document) return;
+      setBusy(true);
+      try {
+        const settings = await loadSettings();
+        const rotation = normalizeRotation(page.rotation + delta);
+        const { result, quad } = await rerenderPage({
+          docUuid: document.uuid,
+          pageUuid: page.uuid,
+          rawPath: page.rawPath,
+          mode: page.mode,
+          quad: page.quad,
+          options: resolveRenderOptions(settings),
+          rotation,
+        });
+        await updatePageRender(page.id, {
+          mode: page.mode,
+          outPath: result.outPath,
+          thumbPath: result.thumbPath,
+          quad,
+          rotation,
+          metrics: result.metricsAfter,
+          stages: result.stages,
+          width: result.width,
+          height: result.height,
+        });
+        await reload();
       } catch (error) {
         showToast(scannerErrorMessage(scannerErrorCode(error), (error as Error)?.message), 'error');
       } finally {
@@ -273,6 +320,18 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
         label: '按当前设置重跑这一页',
         hint: '原图不动，重新出一版成品',
         onPress: () => void rerunCurrent(page),
+      },
+      {
+        key: 'rotate-left',
+        label: '左转 90°',
+        hint: page.rotation ? `当前已转 ${page.rotation}°` : undefined,
+        onPress: () => void rotatePage(page, -90),
+      },
+      {
+        key: 'rotate-right',
+        label: '右转 90°',
+        hint: page.rotation ? `当前已转 ${page.rotation}°` : undefined,
+        onPress: () => void rotatePage(page, 90),
       },
       {
         key: 'top',
@@ -301,7 +360,7 @@ export default function DocDetailScreen({ documentId, onBack, onDeleted }: Props
         onPress: () => void removePage(page),
       },
     ];
-  }, [menuPage, moveToEdge, pages.length, removePage, rerunCurrent, splitToNewDocument]);
+  }, [menuPage, moveToEdge, pages.length, removePage, rerunCurrent, rotatePage, splitToNewDocument]);
 
   const doExportPdf = useCallback(async () => {
     if (!document) return;

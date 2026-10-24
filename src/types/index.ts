@@ -125,6 +125,8 @@ export interface PageRecord {
   thumbPath: string;
   mode: ScanMode;
   quad: QuadPoint[] | null;
+  /** 旋正：成品相对原图顺时针转的角度（0/90/180/270）；四角仍按原图坐标系存 */
+  rotation: number;
   metrics: ImageMetrics | null;
   stages: StageTimings | null;
   width: number;

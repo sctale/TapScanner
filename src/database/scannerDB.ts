@@ -72,6 +72,7 @@ export async function initDatabase(): Promise<void> {
       stages TEXT NOT NULL DEFAULT '',
       width INTEGER NOT NULL DEFAULT 0,
       height INTEGER NOT NULL DEFAULT 0,
+      rotation INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT 0
     );
@@ -95,6 +96,13 @@ export async function initDatabase(): Promise<void> {
     'documents',
     'deleted_at',
     'ALTER TABLE documents ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0',
+  );
+  // 旋正（v0.2.3）：老库里没有这一列，补一次；默认 0 = 不转，历史成品照原样显示
+  await ensureColumn(
+    database,
+    'pages',
+    'rotation',
+    'ALTER TABLE pages ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0',
   );
   await database.execAsync('CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(deleted_at);');
 }
@@ -320,6 +328,7 @@ interface PageRow {
   stages: string;
   width: number;
   height: number;
+  rotation?: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -349,6 +358,7 @@ function toPage(row: PageRow): PageRecord {
     stages: parseJson<PageRecord['stages']>(row.stages),
     width: row.width,
     height: row.height,
+    rotation: Number(row.rotation ?? 0) || 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -361,6 +371,8 @@ export interface NewPage {
   thumbPath: string;
   mode: ScanMode;
   quad: QuadPoint[] | null;
+  /** 旋正角度，缺省 0 */
+  rotation?: number;
   metrics: PageRecord['metrics'];
   stages: PageRecord['stages'];
   width: number;
@@ -377,8 +389,8 @@ export async function appendPage(page: NewPage): Promise<PageRecord> {
   const position = row?.next ?? 0;
   const uuid = genUuid();
   const result = await database.runAsync(
-    `INSERT INTO pages (uuid, document_id, position, raw_path, out_path, thumb_path, mode, quad, metrics, stages, width, height, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO pages (uuid, document_id, position, raw_path, out_path, thumb_path, mode, quad, metrics, stages, width, height, rotation, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       uuid,
       page.documentId,
@@ -392,6 +404,7 @@ export async function appendPage(page: NewPage): Promise<PageRecord> {
       page.stages ? JSON.stringify(page.stages) : '',
       page.width,
       page.height,
+      page.rotation ?? 0,
       now,
       now,
     ],
@@ -407,6 +420,7 @@ export async function appendPage(page: NewPage): Promise<PageRecord> {
     thumbPath: page.thumbPath,
     mode: page.mode,
     quad: page.quad,
+    rotation: page.rotation ?? 0,
     metrics: page.metrics,
     stages: page.stages,
     width: page.width,
@@ -433,6 +447,8 @@ export async function updatePageRender(
     outPath: string;
     thumbPath: string;
     quad: QuadPoint[] | null;
+    /** 旋正角度：换档/重跑时必须原样回放，否则用户转过的方向会被悄悄抹掉 */
+    rotation?: number;
     metrics: PageRecord['metrics'];
     stages: PageRecord['stages'];
     width: number;
@@ -441,13 +457,14 @@ export async function updatePageRender(
 ): Promise<void> {
   const database = await getDB();
   await database.runAsync(
-    `UPDATE pages SET mode = ?, out_path = ?, thumb_path = ?, quad = ?, metrics = ?, stages = ?,
+    `UPDATE pages SET mode = ?, out_path = ?, thumb_path = ?, quad = ?, rotation = ?, metrics = ?, stages = ?,
             width = ?, height = ?, updated_at = ? WHERE id = ?`,
     [
       patch.mode,
       patch.outPath,
       patch.thumbPath,
       patch.quad ? JSON.stringify(patch.quad) : '',
+      patch.rotation ?? 0,
       patch.metrics ? JSON.stringify(patch.metrics) : '',
       patch.stages ? JSON.stringify(patch.stages) : '',
       patch.width,

@@ -26,7 +26,13 @@ import {
   findMode,
   genUuid,
 } from '../constants';
-import { analyzeImage, isEngineReady, scannerErrorCode, scannerErrorMessage } from '../native/ScannerNative';
+import {
+  analyzeImage,
+  isEngineReady,
+  normalizeRotation,
+  scannerErrorCode,
+  scannerErrorMessage,
+} from '../native/ScannerNative';
 import {
   analyzeRaw,
   importSource,
@@ -66,6 +72,8 @@ interface SessionPage {
   render?: RenderedPage;
   mode: ScanMode;
   quad: QuadPoint[] | null;
+  /** 旋正角度（成品顺时针转角）。四角仍按原图坐标系，转的是裁好的那一页 */
+  rotation: number;
   /** 重跑计数：只有 token 仍是最新的那次结果才允许写回，连点档位不会被旧结果盖掉 */
   token: number;
   error?: { step: string; message: string };
@@ -197,9 +205,18 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
             mode,
             next.quad ?? capture.analyze.quad,
             options,
+            next.rotation,
           );
           if (pagesRef.current.find((p) => p.id === next.id)?.token !== token) continue; // 已被重跑，旧结果作废
-          patch(next.id, { status: 'ready', capture, render, mode, quad: render.quad, error: undefined });
+          patch(next.id, {
+            status: 'ready',
+            capture,
+            render,
+            mode,
+            quad: render.quad,
+            rotation: render.rotation,
+            error: undefined,
+          });
         } catch (error) {
           const step = next.capture ? 'process' : 'relocate';
           patch(next.id, {
@@ -253,6 +270,20 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
   const retryPage = useCallback((page: SessionPage) => requeue(page.id, { error: undefined }), [requeue]);
 
   /**
+   * 旋正：把「裁好的这一页」转 90°（不是转原图 —— 四角仍按原图坐标系存着，重跑不会串位）。
+   *
+   * 只做手动：哪一边是页顶在纯几何上没有答案（文字朝上要靠 OCR 才知道），
+   * 而「转错了能一键转回来」是扫描全能王给用户留的同一出口。
+   */
+  const rotateBy = useCallback(
+    (delta: number) => {
+      if (!current) return;
+      requeue(current.id, { rotation: normalizeRotation(current.rotation + delta) });
+    },
+    [current, requeue],
+  );
+
+  /**
    * 重新找纸边：换到更高的分析分辨率（1600）再跑一次检测。
    *
    * 自动检测是在当前这张图上「猜」，失败时只剩手动拖角一条路；换个分辨率重跑常常就成功了。
@@ -303,6 +334,7 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
           status: 'queued' as const,
           mode: settingsRef.current.defaultMode,
           quad: null,
+          rotation: 0,
           token: 0,
         },
       ];
@@ -696,6 +728,30 @@ export default function ScanScreen({ active = true }: { active?: boolean }) {
                 >
                   <Text style={styles.outlineButtonText}>重新找纸边（更仔细）</Text>
                 </Pressable>
+
+                {/* 旋正：纸拍横了 / 倒了，转一下就行，不必重拍（对标扫描全能王的 ↺ ↻） */}
+                <View style={styles.adjustRow}>
+                  <Pressable
+                    style={[styles.outlineButton, styles.outlineGrow]}
+                    disabled={!current || current.status === 'working'}
+                    onPress={() => rotateBy(-90)}
+                    accessibilityRole="button"
+                    accessibilityLabel="向左旋转 90 度"
+                    accessibilityHint="把这一页逆时针转过来"
+                  >
+                    <Text style={styles.outlineButtonText}>↺ 左转</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.outlineButton, styles.outlineGrow]}
+                    disabled={!current || current.status === 'working'}
+                    onPress={() => rotateBy(90)}
+                    accessibilityRole="button"
+                    accessibilityLabel="向右旋转 90 度"
+                    accessibilityHint="把这一页顺时针转过去"
+                  >
+                    <Text style={styles.outlineButtonText}>右转 ↻</Text>
+                  </Pressable>
+                </View>
 
                 <View style={styles.adjustRow}>
                   <Pressable

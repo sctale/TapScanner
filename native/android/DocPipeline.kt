@@ -79,7 +79,10 @@ object DocPipeline {
     if (!File(clean).exists()) {
       throw PipelineError(ScanErrors.DECODE, "文件不存在：$clean")
     }
-    val mat = Imgcodecs.imread(clean, Imgcodecs.IMREAD_COLOR)
+    // IMREAD_IGNORE_ORIENTATION：OpenCV 各版本对「imread 要不要顺手按 EXIF 转」并不一致，
+    // 而本项目的约定是「朝向只由 ExifOrientation + applyRotation 这一处决定」。
+    // 两边都做 = 转两次：实测 4.13 的 Android 绑定会自己转，于是竖拍的照片出图变横的。
+    val mat = Imgcodecs.imread(clean, Imgcodecs.IMREAD_COLOR or Imgcodecs.IMREAD_IGNORE_ORIENTATION)
     if (mat.empty()) {
       mat.release()
       throw PipelineError(ScanErrors.DECODE, "读不出这张图片（格式不支持或已损坏）：$clean")
